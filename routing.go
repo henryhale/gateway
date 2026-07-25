@@ -55,7 +55,7 @@ func (s *priorityStrategy) Select(
 	candidates []ProviderState,
 ) (ProviderState, error) {
 	if len(candidates) == 0 {
-		return ProviderState{}, fmt.Errorf("gateway: priority routing: no candidates")
+		return ProviderState{}, errors.New("gateway: priority routing: no candidates")
 	}
 
 	ordered := append([]ProviderState(nil), candidates...)
@@ -99,7 +99,7 @@ func (s *roundRobinStrategy) Select(
 	candidates []ProviderState,
 ) (ProviderState, error) {
 	if len(candidates) == 0 {
-		return ProviderState{}, fmt.Errorf("gateway: round-robin routing: no candidates")
+		return ProviderState{}, errors.New("gateway: round-robin routing: no candidates")
 	}
 
 	ordered := append([]ProviderState(nil), candidates...)
@@ -145,7 +145,7 @@ func (s *weightedStrategy) Select(
 	candidates []ProviderState,
 ) (ProviderState, error) {
 	if len(candidates) == 0 {
-		return ProviderState{}, fmt.Errorf("gateway: weighted routing: no candidates")
+		return ProviderState{}, errors.New("gateway: weighted routing: no candidates")
 	}
 
 	total := 0
@@ -205,7 +205,7 @@ func (s *powerOfTwoStrategy) Select(
 	candidates []ProviderState,
 ) (ProviderState, error) {
 	if len(candidates) == 0 {
-		return ProviderState{}, fmt.Errorf("gateway: power-of-two routing: no candidates")
+		return ProviderState{}, errors.New("gateway: power-of-two routing: no candidates")
 	}
 	if len(candidates) == 1 {
 		return candidates[0], nil
@@ -246,7 +246,7 @@ func (lowestCostStrategy) Select(
 	candidates []ProviderState,
 ) (ProviderState, error) {
 	if len(candidates) == 0 {
-		return ProviderState{}, fmt.Errorf("gateway: lowest-cost routing: no candidates")
+		return ProviderState{}, errors.New("gateway: lowest-cost routing: no candidates")
 	}
 
 	selected := candidates[0]

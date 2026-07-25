@@ -170,17 +170,17 @@ func normalizeError(err error, provider string, operation Operation, attempt int
 	}
 
 	if gatewayError, ok := AsError(err); ok {
-		copy := *gatewayError
-		if copy.Provider == "" {
-			copy.Provider = provider
+		cloned := *gatewayError
+		if cloned.Provider == "" {
+			cloned.Provider = provider
 		}
-		if copy.Operation == "" {
-			copy.Operation = operation
+		if cloned.Operation == "" {
+			cloned.Operation = operation
 		}
-		if copy.Attempt == 0 {
-			copy.Attempt = attempt
+		if cloned.Attempt == 0 {
+			cloned.Attempt = attempt
 		}
-		return &copy
+		return &cloned
 	}
 
 	return &GatewayError{

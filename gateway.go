@@ -60,18 +60,18 @@ func New[RequestPayload any, ResponsePayload any](
 	for _, rawRegistration := range config.providers {
 		registration, ok := rawRegistration.(ProviderRegistration[RequestPayload, ResponsePayload])
 		if !ok {
-			return nil, fmt.Errorf(
+			return nil, errors.New(
 				"gateway: provider registration uses request or response types that do not match the gateway",
 			)
 		}
 
 		if registration.provider == nil {
-			return nil, fmt.Errorf("gateway: provider cannot be nil")
+			return nil, errors.New("gateway: provider cannot be nil")
 		}
 
 		name := registration.provider.Name()
 		if name == "" {
-			return nil, fmt.Errorf("gateway: provider name cannot be empty")
+			return nil, errors.New("gateway: provider name cannot be empty")
 		}
 		if _, exists := gateway.providers[name]; exists {
 			return nil, fmt.Errorf("gateway: duplicate provider name %q", name)
@@ -85,7 +85,7 @@ func New[RequestPayload any, ResponsePayload any](
 	}
 
 	if len(gateway.providers) == 0 {
-		return nil, fmt.Errorf("gateway: at least one provider is required")
+		return nil, errors.New("gateway: at least one provider is required")
 	}
 
 	return gateway, nil

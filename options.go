@@ -1,7 +1,7 @@
 package gateway
 
 import (
-	"fmt"
+	"errors"
 	"log/slog"
 	"maps"
 	"time"
@@ -120,7 +120,7 @@ func WithProviders[RequestPayload any, ResponsePayload any](
 func WithRouting(strategy RoutingStrategy) Option {
 	return optionFunc(func(config *gatewayConfig) error {
 		if strategy == nil {
-			return fmt.Errorf("gateway: routing strategy cannot be nil")
+			return errors.New("gateway: routing strategy cannot be nil")
 		}
 		config.routing = strategy
 		return nil
@@ -131,7 +131,7 @@ func WithRouting(strategy RoutingStrategy) Option {
 func WithFallback(policy FallbackPolicy) Option {
 	return optionFunc(func(config *gatewayConfig) error {
 		if policy == nil {
-			return fmt.Errorf("gateway: fallback policy cannot be nil")
+			return errors.New("gateway: fallback policy cannot be nil")
 		}
 		config.fallback = policy
 		return nil
@@ -142,7 +142,7 @@ func WithFallback(policy FallbackPolicy) Option {
 func WithRetry(retry Retry) Option {
 	return optionFunc(func(config *gatewayConfig) error {
 		if retry.MaxAttempts < 1 {
-			return fmt.Errorf("gateway: retry max attempts must be at least one")
+			return errors.New("gateway: retry max attempts must be at least one")
 		}
 		config.retry = retry
 		return nil
@@ -153,7 +153,7 @@ func WithRetry(retry Retry) Option {
 func WithRequestTimeout(timeout time.Duration) Option {
 	return optionFunc(func(config *gatewayConfig) error {
 		if timeout <= 0 {
-			return fmt.Errorf("gateway: request timeout must be positive")
+			return errors.New("gateway: request timeout must be positive")
 		}
 		config.requestTimeout = timeout
 		return nil
@@ -164,7 +164,7 @@ func WithRequestTimeout(timeout time.Duration) Option {
 func WithLogger(logger *slog.Logger) Option {
 	return optionFunc(func(config *gatewayConfig) error {
 		if logger == nil {
-			return fmt.Errorf("gateway: logger cannot be nil")
+			return errors.New("gateway: logger cannot be nil")
 		}
 		config.logger = logger
 		return nil
@@ -177,8 +177,8 @@ func cloneStringMap(source map[string]string) map[string]string {
 		return map[string]string{}
 	}
 
-	copy := make(map[string]string, len(source))
-	maps.Copy(copy, source)
+	cloned := make(map[string]string, len(source))
+	maps.Copy(cloned, source)
 
-	return copy
+	return cloned
 }

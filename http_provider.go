@@ -235,15 +235,16 @@ func classifyTransportError(provider string, err error) error {
 	code := CodeTransportError
 	message := "provider transport failed"
 
-	if errors.Is(err, context.Canceled) {
+	switch {
+	case errors.Is(err, context.Canceled):
 		kind = ErrorCanceled
 		code = CodeRequestCanceled
 		message = "request was canceled"
-	} else if errors.Is(err, context.DeadlineExceeded) {
+	case errors.Is(err, context.DeadlineExceeded):
 		kind = ErrorTimeout
 		code = CodeRequestTimeout
 		message = "provider request timed out"
-	} else {
+	default:
 		var netError net.Error
 		if errors.As(err, &netError) && netError.Timeout() {
 			kind = ErrorTimeout

@@ -1,0 +1,84 @@
+# golangci-lint v2 configuration.
+# YAML indentation uses spaces; Go source formatting uses hard tabs.
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  relative-path-mode: gomod
+
+linters:
+  # Includes errcheck, govet, ineffassign, staticcheck, and unused.
+  default: standard
+
+  # Additional checks with a relatively low false-positive rate.
+  enable:
+    - asciicheck
+    - bidichk
+    - bodyclose
+    - contextcheck
+    - durationcheck
+    - errname
+    - errorlint
+    - fatcontext
+    - gocheckcompilerdirectives
+    - gocritic
+    - gosec
+    - misspell
+    - nilerr
+    - nilnesserr
+    - nolintlint
+    - perfsprint
+    - predeclared
+    - rowserrcheck
+    - sqlclosecheck
+    - thelper
+    - unconvert
+    - usestdlibvars
+    - wastedassign
+    - whitespace
+
+  settings:
+    nolintlint:
+      allow-unused: false
+      require-explanation: true
+      require-specific: true
+
+  exclusions:
+    generated: strict
+    presets:
+      - comments
+      - common-false-positives
+      - std-error-handling
+    rules:
+      # Security checks often produce low-value warnings in test fixtures.
+      - path: _test\.go
+        linters:
+          - gosec
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+    - golines
+
+  settings:
+    gofmt:
+      simplify: true
+    golines:
+      max-len: 120
+      tab-len: 8
+      shorten-comments: false
+
+  exclusions:
+    generated: strict
+
+issues:
+  # Report all distinct findings in local runs and CI.
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+output:
+  sort-order:
+    - file
+    - linter
