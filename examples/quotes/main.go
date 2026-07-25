@@ -9,6 +9,7 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"examples/quotes/domain"
@@ -18,6 +19,10 @@ import (
 )
 
 func main() {
+	if os.Getenv("QUOTES_API_ADDRESS") == "" {
+		log.Fatalf("qoutes: QUOTES_API_ADDRESS not set")
+	}
+
 	quoteGateway, err := newQuoteGateway()
 	if err != nil {
 		log.Fatalf("qoutes: failed to build gateway: %v", err)
@@ -27,7 +32,7 @@ func main() {
 	mux.HandleFunc("/quote", quoteHandler(quoteGateway))
 
 	server := &http.Server{
-		Addr:              ":8080",
+		Addr:              os.Getenv("QUOTES_API_ADDRESS"),
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,

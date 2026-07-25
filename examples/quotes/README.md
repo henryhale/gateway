@@ -23,6 +23,8 @@ gateway retries and, if needed, falls back to a different provider.
 ## Run
 
 ```bash
+cp .env.example .env
+
 go run main.go
 ```
 
