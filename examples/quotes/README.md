@@ -33,7 +33,11 @@ curl http://localhost:8080/quote
 ```
 
 ```json
-{"text":"The most effective way to do it, is to do it.","author":"Amelia Earhart", "source":"zen_quotes"}
+{
+	"text": "The most effective way to do it, is to do it.",
+	"author": "Amelia Earhart",
+	"source": "zen_quotes"
+}
 ```
 
 The `X-Quote-Provider` response header names which provider served the quote.
