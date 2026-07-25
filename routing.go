@@ -2,8 +2,7 @@ package gateway
 
 import (
 	"context"
-	"fmt"
-	"math/rand"
+	"errors"
 	"sort"
 	"sync"
 	"time"
@@ -116,8 +115,6 @@ func (s *roundRobinStrategy) Select(
 }
 
 type weightedStrategy struct {
-	mu      sync.Mutex
-	random  *rand.Rand
 	weights map[string]int
 }
 
@@ -128,10 +125,7 @@ func Weighted(weights map[string]int) RoutingStrategy {
 		copied[name] = weight
 	}
 
-	return &weightedStrategy{
-		random:  rand.New(rand.NewSource(time.Now().UnixNano())),
-		weights: copied,
-	}
+	return &weightedStrategy{weights: copied}
 }
 
 // Name returns the built-in strategy identifier.
@@ -162,9 +156,7 @@ func (s *weightedStrategy) Select(
 		total += weight
 	}
 
-	s.mu.Lock()
-	target := s.random.Intn(total)
-	s.mu.Unlock()
+	target := randomIntn(total)
 
 	for index, weight := range weights {
 		if target < weight {
@@ -177,8 +169,6 @@ func (s *weightedStrategy) Select(
 }
 
 type powerOfTwoStrategy struct {
-	mu     sync.Mutex
-	random *rand.Rand
 	scorer CandidateScorer
 }
 
@@ -188,10 +178,7 @@ func PowerOfTwo(scorer CandidateScorer) RoutingStrategy {
 		scorer = ByObservedLatency()
 	}
 
-	return &powerOfTwoStrategy{
-		random: rand.New(rand.NewSource(time.Now().UnixNano())),
-		scorer: scorer,
-	}
+	return &powerOfTwoStrategy{scorer: scorer}
 }
 
 // Name returns the built-in strategy identifier.
@@ -211,13 +198,11 @@ func (s *powerOfTwoStrategy) Select(
 		return candidates[0], nil
 	}
 
-	s.mu.Lock()
-	firstIndex := s.random.Intn(len(candidates))
-	secondIndex := s.random.Intn(len(candidates) - 1)
+	firstIndex := randomIntn(len(candidates))
+	secondIndex := randomIntn(len(candidates) - 1)
 	if secondIndex >= firstIndex {
 		secondIndex++
 	}
-	s.mu.Unlock()
 
 	first := candidates[firstIndex]
 	second := candidates[secondIndex]

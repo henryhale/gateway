@@ -3,7 +3,6 @@ package gateway
 import (
 	"context"
 	"math"
-	"math/rand"
 	"time"
 )
 
@@ -44,7 +43,7 @@ func (b ExponentialBackoff) Delay(retryNumber int) time.Duration {
 		if jitter > 1 {
 			jitter = 1
 		}
-		multiplier := 1 - jitter + rand.Float64()*(2*jitter)
+		multiplier := 1 - jitter + randomFloat64()*(2*jitter)
 		delay = time.Duration(float64(delay) * multiplier)
 	}
 
