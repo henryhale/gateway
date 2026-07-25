@@ -1,8 +1,14 @@
+<div align=center>
+<img src="./assets/logo.svg" width=45 height=45 />
+
 # gateway
 
 A generic orchestration and gateway framework for routing one standard request format across multiple external providers.
 
-Use it to build payment gateways, LLM gateways, notification gateways, storage gateways, search gateways, or any system that needs:
+</div>
+
+
+Use this package to build gateways for payments, LLMs, notifications, storage, search, or any system that needs:
 
 - A unified application-facing interface.
 - Bidirectional payload translation.
@@ -11,7 +17,7 @@ Use it to build payment gateways, LLM gateways, notification gateways, storage g
 - Retry and cross-provider fallback.
 - Request timeouts and structured logging.
 
-Have a look at a simple payment gateway setup:
+A simple payment gateway can be setup as shown below:
 
 ```go
 paymentGateway, err := gw.New[ChargeRequest, ChargeResponse](
@@ -60,12 +66,10 @@ result, err := paymentGateway.HandleRequest(ctx, gw.Request[ChargeRequest]{
 })
 ```
 
-## Requirements
+## Installation
 
 - Go 1.23 or later.
 - No third-party runtime dependencies.
-
-## Installation
 
 ```bash
 go get github.com/henryhale/gateway
@@ -73,7 +77,7 @@ go get github.com/henryhale/gateway
 
 ## Documentation
 
-See [docs/index.md](docs/index.md) for the full guide: defining standard models, writing HTTP and transport-independent providers, gateway construction, routing strategies, retries and fallback, error handling, framework integration, logging, and provider hints.
+See [docs/index.md](docs/index.md) for the full guide.
 
 ## Development
 
@@ -93,4 +97,4 @@ go test -race ./...
 
 ## License
 
-MIT. See [LICENSE](LICENSE.txt).
+MIT. See [LICENSE](LICENSE.txt) for details.
