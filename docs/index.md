@@ -1,34 +1,69 @@
 # Documentation
 
-This guide covers everything needed to build a gateway with `gw`: defining
-standard models, implementing providers, configuring routing and resilience,
-handling errors, and integrating with an application framework.
+This guide covers everything needed to build a gateway: defining standard
+models, implementing providers, configuring routing and resilience, handling
+errors, and integrating with an application framework.
+
+The Go package name is `gateway` (`github.com/henryhale/gateway`). Every
+example on this page imports it under the alias `gw`:
+
+```go
+import gw "github.com/henryhale/gateway"
+```
 
 ## Contents
 
-- [Developer workflow](#developer-workflow)
-- [Standard application models](#standard-application-models)
-- [HTTP provider codec](#http-provider-codec)
+- [Overview](#overview)
+- [Core types](#core-types)
+- [HTTP provider](#http-provider)
 - [Transport-independent provider](#transport-independent-provider)
 - [Gateway construction](#gateway-construction)
-- [Built-in routing strategies](#built-in-routing-strategies)
+- [Routing strategies](#routing-strategies)
 - [Retry and fallback](#retry-and-fallback)
 - [Error handling](#error-handling)
-- [Framework integration](#framework-integration)
 - [Logging](#logging)
+- [Framework integration](#framework-integration)
 - [Provider hints](#provider-hints)
 
-## Developer workflow
+## Overview
 
-A framework user performs five actions:
+Building a gateway means doing five things:
 
-1. Define standard request and response structs.
-2. Implement a provider codec or the transport-independent `Provider` interface.
-3. Register providers.
-4. Select a built-in routing strategy and resilience policies.
-5. Call `HandleRequest` from any application framework.
+1. Define standard request and response structs for your operation.
+2. Implement one [provider](#core-types) per external service, either as an
+   [HTTP codec](#http-provider) or a [transport-independent provider](#transport-independent-provider).
+3. Register providers with [`gw.New`](#gateway-construction).
+4. Pick a [routing strategy](#routing-strategies) and, optionally, [retry and fallback](#retry-and-fallback) policies.
+5. Call `HandleRequest` from any application framework — see [Framework integration](#framework-integration).
 
-## Standard application models
+## Core types
+
+> Source: [`types.go`](../types.go), [`provider.go`](../provider.go)
+
+Every gateway is generic over one request payload and one response payload.
+Application code only ever sees these standard types:
+
+| Type | Purpose |
+| --- | --- |
+| `Operation` | A string identifying a capability, e.g. `"payment.charge"`. |
+| `Request[T]` | The standard request: `Operation`, `Payload`, plus optional `ID`, `IdempotencyKey`, `ProviderHint`, and `Metadata`. |
+| `Result[T]` | The standard response: `Payload`, the `Provider` that served it, and the `Attempts` made. |
+| `Attempt` | One provider invocation: timing, `ErrorKind`, `ErrorCode`, and success. |
+| `Usage` | Optional normalized resource consumption reported by a provider. |
+| `ProviderState` | A provider candidate as seen by a routing strategy. |
+
+Every provider — regardless of transport — implements the same small
+interface:
+
+```go
+type Provider[RequestPayload any, ResponsePayload any] interface {
+    Name() string
+    Supports(operation Operation) bool
+    Execute(ctx context.Context, request Request[RequestPayload]) (ResponsePayload, error)
+}
+```
+
+Define your standard payloads once and reuse them across every provider:
 
 ```go
 type ChargeRequest struct {
@@ -44,11 +79,24 @@ type ChargeResponse struct {
 }
 ```
 
-These are the only payment types used by application code. Provider-specific schemas remain inside provider adapters.
+Provider-specific schemas stay inside provider adapters and never leak into
+application code.
 
-## HTTP provider codec
+## HTTP provider
 
-Implement `gw.Codec[Request, Response]` when the external provider uses HTTP.
+> Source: [`http_provider.go`](../http_provider.go)
+
+Use `NewHTTPProvider` when the external service speaks HTTP. It handles the
+`net/http` request lifecycle for you; you only implement a `Codec` that
+translates between your standard types and the provider's wire format.
+
+```go
+type Codec[RequestPayload any, ResponsePayload any] interface {
+    Supports(operation Operation) bool
+    Encode(ctx context.Context, request Request[RequestPayload]) (HTTPRequest, error)
+    Decode(ctx context.Context, response HTTPResponse) (ResponsePayload, error)
+}
+```
 
 ```go
 type FastPayCodec struct{}
@@ -108,7 +156,7 @@ func (FastPayCodec) Decode(
 }
 ```
 
-Create the provider:
+Create the provider from the codec:
 
 ```go
 fastPay := gw.NewHTTPProvider(
@@ -125,11 +173,19 @@ fastPay := gw.NewHTTPProvider(
 )
 ```
 
-The HTTP adapter propagates `Request.ID` through `X-Request-ID` and `Request.IdempotencyKey` through `Idempotency-Key`. Responses are limited to 10 MiB by default; override `MaxResponseBytes` when necessary.
+Notes on `HTTPProviderConfig`:
+
+- `Timeout` defaults to 30 seconds when unset (or when `Client` is also unset).
+- `MaxResponseBytes` defaults to 10 MiB; oversized responses fail with `gw.CodeResponseTooLarge`.
+- `Request.ID` is propagated through the `X-Request-ID` header, and `Request.IdempotencyKey` through `Idempotency-Key`.
+- Supply your own `Client` (a `*http.Client`) to control transport, proxies, or TLS settings; `Timeout` is ignored when `Client` is set.
 
 ## Transport-independent provider
 
-Implement `Provider` directly for an SDK, gRPC client, queue, local model, database, or any custom transport.
+> Source: [`provider.go`](../provider.go)
+
+Implement `Provider` directly for an SDK, gRPC client, queue, local model,
+database, or any transport that isn't plain HTTP.
 
 ```go
 type SDKProvider struct {
@@ -165,20 +221,16 @@ func (p *SDKProvider) Execute(
 }
 ```
 
-The complete contract is intentionally small:
-
-```go
-type Provider[RequestPayload any, ResponsePayload any] interface {
-    Name() string
-    Supports(operation Operation) bool
-    Execute(
-        ctx context.Context,
-        request Request[RequestPayload],
-    ) (ResponsePayload, error)
-}
-```
+Whatever error `Execute` returns is normalized on the way out — return a
+`*gw.GatewayError` (see [Error handling](#error-handling)) when you can
+classify the failure, or a plain `error` otherwise; the gateway wraps it with
+`gw.ErrorInternal` and `gw.CodeAdapterError`.
 
 ## Gateway construction
+
+> Source: [`gateway.go`](../gateway.go), [`options.go`](../options.go)
+
+`gw.New` takes functional options and returns a `*Gateway[RequestPayload, ResponsePayload]`:
 
 ```go
 paymentGateway, err := gw.New[ChargeRequest, ChargeResponse](
@@ -217,7 +269,32 @@ if err != nil {
 }
 ```
 
-## Built-in routing strategies
+At least one provider is required; `gw.New` returns an error otherwise, and
+also rejects duplicate provider names and nil providers/options where
+applicable.
+
+`gw.UseProvider` accepts routing metadata for one provider:
+
+| Option | Effect |
+| --- | --- |
+| `WithProviderPriority(n)` | Lower is preferred by `Priority` routing. Defaults to `100`. |
+| `WithProviderWeight(n)` | Relative share used by `Weighted` routing. Defaults to `1`. |
+| `WithProviderCost(c)` | Per-request cost used by `LowestCost` routing and `ByCost` scoring. |
+| `WithProviderMetadata(m)` | Arbitrary metadata attached to the `ProviderState` seen by routing strategies. |
+
+Options omitted from `gw.New` fall back to these defaults:
+
+| Option | Default |
+| --- | --- |
+| `WithRouting` | `gw.Priority()` (registration order) |
+| `WithRetry` | `gw.Retry{MaxAttempts: 1}` (no retries) |
+| `WithFallback` | disabled (no cross-provider fallback) |
+| `WithRequestTimeout` | `30 * time.Second` |
+| `WithLogger` | `slog.Default()` |
+
+## Routing strategies
+
+> Source: [`routing.go`](../routing.go)
 
 ### Priority
 
@@ -225,7 +302,8 @@ if err != nil {
 gw.WithRouting(gw.Priority("fastpay", "safepay"))
 ```
 
-Explicit names take precedence. Providers omitted from the list use their registered priority.
+Explicit names take precedence, in the order listed. Providers omitted from
+the list fall back to their registered `WithProviderPriority` value.
 
 ### Round robin
 
@@ -244,7 +322,8 @@ gw.WithRouting(gw.Weighted(map[string]int{
 }))
 ```
 
-Uses explicit strategy weights first, then provider registration weights.
+Uses the weights passed here first, then falls back to each provider's
+registered `WithProviderWeight`.
 
 ### Power of two choices
 
@@ -252,13 +331,14 @@ Uses explicit strategy weights first, then provider registration weights.
 gw.WithRouting(gw.PowerOfTwo(gw.ByObservedLatency()))
 ```
 
-Samples two eligible providers and selects the lower-scored provider.
+Samples two eligible providers at random and selects the one with the lower
+score from the given `CandidateScorer`.
 
-Available scorers:
+Built-in scorers:
 
 ```go
-gw.ByObservedLatency()
-gw.ByCost()
+gw.ByObservedLatency() // prefers lower observed latency
+gw.ByCost()            // prefers lower registered cost
 ```
 
 ### Lowest cost
@@ -267,11 +347,25 @@ gw.ByCost()
 gw.WithRouting(gw.LowestCost())
 ```
 
-Uses values supplied through `gw.WithProviderCost`.
+Selects the provider with the lowest cost from `WithProviderCost`.
+
+### Custom strategies
+
+Implement `RoutingStrategy` directly to add a strategy not covered above:
+
+```go
+type RoutingStrategy interface {
+    Name() string
+    Select(ctx context.Context, candidates []ProviderState) (ProviderState, error)
+}
+```
 
 ## Retry and fallback
 
-Retries repeat a request against the same provider. Fallback selects a different provider.
+> Source: [`resilience.go`](../resilience.go)
+
+Retries repeat a request against the **same** provider. Fallback moves to a
+**different** provider. They are independent and can be combined.
 
 ```go
 gw.WithRetry(gw.Retry{
@@ -290,13 +384,23 @@ gw.WithFallback(gw.FallbackOn(
 ))
 ```
 
-Only errors marked `Retryable` are retried. `gw.HTTPProviderError` and the built-in HTTP transport mark transient HTTP and network failures appropriately.
+- Only errors with `Retryable: true` are retried. `gw.HTTPProviderError` and
+  the built-in HTTP transport already mark transient HTTP and network
+  failures as retryable.
+- Fallback is opt-in and only triggers for the error `Kind`s passed to
+  `FallbackOn`, and only when the error is also marked `Fallbackable`.
+- `ExponentialBackoff.Initial` and `.Maximum` default to `100ms` and `5s`
+  respectively when left at zero; `Jitter` is a fraction (`0`–`1`) applied on
+  top of the computed delay.
 
-Fallback is opt-in and only occurs for kinds selected by `FallbackOn`.
-
-For operations that can create side effects, supply an idempotency key and define conservative retry/fallback policies.
+For operations with side effects, always set `Request.IdempotencyKey` and
+choose retry/fallback policies conservatively.
 
 ## Error handling
+
+> Source: [`errors.go`](../errors.go)
+
+Every error returned by a gateway can be unwrapped into a `*gw.GatewayError`:
 
 ```go
 result, err := paymentGateway.HandleRequest(ctx, request)
@@ -319,22 +423,48 @@ if err != nil {
 }
 ```
 
-Normalized error kinds:
+`GatewayError` carries two levels of detail:
 
-- `validation`
-- `authentication`
-- `authorization`
-- `rate_limit`
-- `timeout`
-- `unavailable`
-- `rejected`
-- `canceled`
-- `internal`
-- `unknown`
+- `Kind` (`gw.ErrorKind`) — a small, stable set of categories safe to branch
+  on: `validation`, `authentication`, `authorization`, `rate_limit`,
+  `timeout`, `unavailable`, `rejected`, `canceled`, `internal`, `unknown`.
+- `Code` (`gw.ErrorCode`) — a finer-grained reason, useful for logging and
+  metrics. Framework-generated codes (e.g. `gw.CodeResponseTooLarge`,
+  `gw.CodeRoutingFailed`) are declared as constants in
+  [`errors.go`](../errors.go); provider adapters may also set their own
+  arbitrary `Code` values (as `FastPayCodec.Decode` does above with
+  `"fastpay_error"`).
+
+Construct normalized errors from an HTTP status with `gw.HTTPProviderError`,
+which also classifies the `Kind` and sets `Retryable`/`Fallbackable` for
+transient statuses (429, 5xx, and request/gateway timeouts).
+
+## Logging
+
+> Source: [`options.go`](../options.go) (`WithLogger`), [`gateway.go`](../gateway.go) (log call sites)
+
+`gw.WithLogger` accepts a standard library `*slog.Logger`. The gateway logs
+request lifecycle events — start, completion, fallback, and per-attempt
+failures — through it, using whichever `slog.Handler` you configure:
+
+```go
+gateway, err := gw.New[Request, Response](
+    // Providers and routing omitted.
+    gw.WithLogger(slog.New(slog.NewJSONHandler(os.Stdout, nil))),
+)
+```
+
+If `WithLogger` is not supplied, the gateway logs through `slog.Default()`.
+
+Because the logger is a plain `*slog.Logger`, no framework-specific interface
+needs to be implemented. Attach any `slog.Handler` — including adapters that
+forward to Zap, Zerolog, OpenTelemetry, or another backend — to route gateway
+logs into your existing pipeline.
 
 ## Framework integration
 
-`Gateway.HandleRequest` accepts `context.Context`, so it integrates directly with:
+`Gateway.HandleRequest` accepts a `context.Context`, so it integrates
+directly with:
 
 - `net/http`
 - Gin, Echo, Fiber, Chi, and other HTTP routers
@@ -371,27 +501,18 @@ func handler(gateway *gw.Gateway[ChargeRequest, ChargeResponse]) http.HandlerFun
 }
 ```
 
-## Logging
-
-`gw.WithLogger` accepts a standard library `*slog.Logger`, so gateway request lifecycle events (start, completion, fallback, and per-attempt failures) are emitted through whatever `slog.Handler` your application already uses.
-
-```go
-gateway, err := gw.New[Request, Response](
-    // Providers and routing omitted.
-    gw.WithLogger(slog.New(slog.NewJSONHandler(os.Stdout, nil))),
-)
-```
-
-If `WithLogger` is not supplied, the gateway logs through `slog.Default()`.
-
-Because the logger is a plain `*slog.Logger`, no framework-specific interface needs to be implemented. Attach any `slog.Handler`, including adapters that forward to Zap, Zerolog, OpenTelemetry, or another observability backend, to route gateway logs into your existing pipeline.
-
 ## Provider hints
 
-A request can target a registered provider directly:
+> Source: [`types.go`](../types.go) (`Request.ProviderHint`), [`gateway.go`](../gateway.go) (`validateRequest`)
+
+A request can target a registered provider directly, bypassing the routing
+strategy for the first attempt:
 
 ```go
 request.ProviderHint = "safepay"
 ```
 
-The provider must support the operation. When fallback is enabled, another provider may be selected after the hinted provider fails with an allowed error kind.
+The hinted provider must be registered and support the requested operation,
+or `HandleRequest` returns a validation error before attempting anything.
+When fallback is enabled, a different provider may still be selected after
+the hinted provider fails with an allowed error kind.
