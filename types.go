@@ -31,7 +31,7 @@ type Attempt struct {
 	StartedAt time.Time
 	Duration  time.Duration
 	ErrorKind ErrorKind
-	ErrorCode string
+	ErrorCode ErrorCode
 	Success   bool
 }
 

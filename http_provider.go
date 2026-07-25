@@ -120,7 +120,7 @@ func (p *httpProvider[RequestPayload, ResponsePayload]) Execute(
 	if p.codec == nil {
 		return zero, &GatewayError{
 			Kind:     ErrorInternal,
-			Code:     "nil_codec",
+			Code:     CodeNilCodec,
 			Message:  "HTTP provider codec is nil",
 			Provider: p.name,
 		}
@@ -129,7 +129,7 @@ func (p *httpProvider[RequestPayload, ResponsePayload]) Execute(
 	if p.baseURL == nil || p.baseURL.Scheme == "" || p.baseURL.Host == "" {
 		return zero, &GatewayError{
 			Kind:     ErrorValidation,
-			Code:     "invalid_base_url",
+			Code:     CodeInvalidBaseURL,
 			Message:  "HTTP provider base URL is invalid",
 			Provider: p.name,
 		}
@@ -155,7 +155,7 @@ func (p *httpProvider[RequestPayload, ResponsePayload]) Execute(
 	if err != nil {
 		return zero, &GatewayError{
 			Kind:         ErrorUnavailable,
-			Code:         "response_read_failed",
+			Code:         CodeResponseReadFailed,
 			Message:      "failed to read provider response",
 			Provider:     p.name,
 			Retryable:    true,
@@ -167,7 +167,7 @@ func (p *httpProvider[RequestPayload, ResponsePayload]) Execute(
 	if int64(len(body)) > p.maxResponseBytes {
 		return zero, &GatewayError{
 			Kind:     ErrorUnavailable,
-			Code:     "response_too_large",
+			Code:     CodeResponseTooLarge,
 			Message:  "provider response exceeded the configured size limit",
 			Provider: p.name,
 		}
@@ -232,22 +232,22 @@ func (p *httpProvider[RequestPayload, ResponsePayload]) buildRequest(
 // classifyTransportError converts net/http failures into normalized gateway errors.
 func classifyTransportError(provider string, err error) error {
 	kind := ErrorUnavailable
-	code := "transport_error"
+	code := CodeTransportError
 	message := "provider transport failed"
 
 	if errors.Is(err, context.Canceled) {
 		kind = ErrorCanceled
-		code = "request_canceled"
+		code = CodeRequestCanceled
 		message = "request was canceled"
 	} else if errors.Is(err, context.DeadlineExceeded) {
 		kind = ErrorTimeout
-		code = "request_timeout"
+		code = CodeRequestTimeout
 		message = "provider request timed out"
 	} else {
 		var netError net.Error
 		if errors.As(err, &netError) && netError.Timeout() {
 			kind = ErrorTimeout
-			code = "network_timeout"
+			code = CodeNetworkTimeout
 			message = "provider network operation timed out"
 		}
 	}

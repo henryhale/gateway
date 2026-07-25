@@ -100,7 +100,7 @@ func (g *Gateway[RequestPayload, ResponsePayload]) HandleRequest(
 	if g == nil {
 		return zero, &GatewayError{
 			Kind:    ErrorInternal,
-			Code:    "nil_gateway",
+			Code:    CodeNilGateway,
 			Message: "gateway is nil",
 		}
 	}
@@ -199,7 +199,7 @@ func (g *Gateway[RequestPayload, ResponsePayload]) validateRequest(
 	if request.Operation == "" {
 		return &GatewayError{
 			Kind:    ErrorValidation,
-			Code:    "operation_required",
+			Code:    CodeOperationRequired,
 			Message: "request operation is required",
 		}
 	}
@@ -209,14 +209,14 @@ func (g *Gateway[RequestPayload, ResponsePayload]) validateRequest(
 		if !exists {
 			return &GatewayError{
 				Kind:    ErrorValidation,
-				Code:    "provider_hint_unknown",
+				Code:    CodeProviderHintUnknown,
 				Message: fmt.Sprintf("provider hint %q is not registered", request.ProviderHint),
 			}
 		}
 		if !entry.provider.Supports(request.Operation) {
 			return &GatewayError{
 				Kind: ErrorValidation,
-				Code: "provider_hint_unsupported",
+				Code: CodeProviderHintUnsupported,
 				Message: fmt.Sprintf(
 					"provider %q does not support operation %q",
 					request.ProviderHint,
@@ -229,7 +229,7 @@ func (g *Gateway[RequestPayload, ResponsePayload]) validateRequest(
 	if !g.hasEligibleProvider(request, nil) {
 		return &GatewayError{
 			Kind:    ErrorValidation,
-			Code:    "operation_unsupported",
+			Code:    CodeOperationUnsupported,
 			Message: fmt.Sprintf("no provider supports operation %q", request.Operation),
 		}
 	}
@@ -274,7 +274,7 @@ func (g *Gateway[RequestPayload, ResponsePayload]) selectProvider(
 	if err != nil {
 		return nil, &GatewayError{
 			Kind:      ErrorUnavailable,
-			Code:      "routing_failed",
+			Code:      CodeRoutingFailed,
 			Message:   err.Error(),
 			Operation: request.Operation,
 			Cause:     err,
@@ -285,7 +285,7 @@ func (g *Gateway[RequestPayload, ResponsePayload]) selectProvider(
 	if !exists {
 		return nil, &GatewayError{
 			Kind:      ErrorInternal,
-			Code:      "routing_unknown_provider",
+			Code:      CodeRoutingUnknownProvider,
 			Message:   fmt.Sprintf("routing strategy selected unknown provider %q", selected.Name),
 			Operation: request.Operation,
 		}
@@ -372,7 +372,7 @@ func (g *Gateway[RequestPayload, ResponsePayload]) executeProvider(
 
 	return zero, attempts, &GatewayError{
 		Kind:      ErrorInternal,
-		Code:      "retry_loop_exhausted",
+		Code:      CodeRetryLoopExhausted,
 		Message:   "provider retry loop ended unexpectedly",
 		Provider:  entry.provider.Name(),
 		Operation: request.Operation,
@@ -439,11 +439,11 @@ func contextGatewayError(
 	attempt int,
 ) *GatewayError {
 	kind := ErrorCanceled
-	code := "request_canceled"
+	code := CodeRequestCanceled
 	message := "request was canceled"
 	if errors.Is(err, context.DeadlineExceeded) {
 		kind = ErrorTimeout
-		code = "request_timeout"
+		code = CodeRequestTimeout
 		message = "gateway request timed out"
 	}
 

@@ -33,10 +33,50 @@ const (
 	ErrorUnknown ErrorKind = "unknown"
 )
 
+// ErrorCode identifies the specific reason behind a GatewayError, scoped within its Kind.
+type ErrorCode string
+
+const (
+	// CodeAdapterError indicates an unclassified error returned by a provider adapter.
+	CodeAdapterError ErrorCode = "adapter_error"
+	// CodeNilGateway indicates a request was made on a nil Gateway.
+	CodeNilGateway ErrorCode = "nil_gateway"
+	// CodeOperationRequired indicates a request was submitted without an operation.
+	CodeOperationRequired ErrorCode = "operation_required"
+	// CodeProviderHintUnknown indicates a request specified an unregistered provider hint.
+	CodeProviderHintUnknown ErrorCode = "provider_hint_unknown"
+	// CodeProviderHintUnsupported indicates a request's provider hint does not support the operation.
+	CodeProviderHintUnsupported ErrorCode = "provider_hint_unsupported"
+	// CodeOperationUnsupported indicates no registered provider supports the requested operation.
+	CodeOperationUnsupported ErrorCode = "operation_unsupported"
+	// CodeRoutingFailed indicates the routing strategy failed to select a provider.
+	CodeRoutingFailed ErrorCode = "routing_failed"
+	// CodeRoutingUnknownProvider indicates the routing strategy selected an unregistered provider.
+	CodeRoutingUnknownProvider ErrorCode = "routing_unknown_provider"
+	// CodeRetryLoopExhausted indicates the provider retry loop ended without a result.
+	CodeRetryLoopExhausted ErrorCode = "retry_loop_exhausted"
+	// CodeRequestCanceled indicates the caller canceled the request context.
+	CodeRequestCanceled ErrorCode = "request_canceled"
+	// CodeRequestTimeout indicates the request context deadline was exceeded.
+	CodeRequestTimeout ErrorCode = "request_timeout"
+	// CodeNilCodec indicates an HTTP provider was configured without a codec.
+	CodeNilCodec ErrorCode = "nil_codec"
+	// CodeInvalidBaseURL indicates an HTTP provider was configured with an invalid base URL.
+	CodeInvalidBaseURL ErrorCode = "invalid_base_url"
+	// CodeResponseReadFailed indicates the HTTP provider response body could not be read.
+	CodeResponseReadFailed ErrorCode = "response_read_failed"
+	// CodeResponseTooLarge indicates the HTTP provider response exceeded the configured size limit.
+	CodeResponseTooLarge ErrorCode = "response_too_large"
+	// CodeTransportError indicates an unclassified HTTP transport failure.
+	CodeTransportError ErrorCode = "transport_error"
+	// CodeNetworkTimeout indicates a lower-level network operation timed out.
+	CodeNetworkTimeout ErrorCode = "network_timeout"
+)
+
 // GatewayError is the normalized error returned by the framework.
 type GatewayError struct {
 	Kind         ErrorKind
-	Code         string
+	Code         ErrorCode
 	Message      string
 	Provider     string
 	Operation    Operation
@@ -79,7 +119,7 @@ func AsError(err error) (*GatewayError, bool) {
 }
 
 // HTTPProviderError creates a normalized error from an HTTP status response.
-func HTTPProviderError(statusCode int, code string, message string) *GatewayError {
+func HTTPProviderError(statusCode int, code ErrorCode, message string) *GatewayError {
 	gatewayError := &GatewayError{
 		Kind:       classifyHTTPStatus(statusCode),
 		Code:       code,
@@ -145,7 +185,7 @@ func normalizeError(err error, provider string, operation Operation, attempt int
 
 	return &GatewayError{
 		Kind:      ErrorInternal,
-		Code:      "adapter_error",
+		Code:      CodeAdapterError,
 		Message:   err.Error(),
 		Provider:  provider,
 		Operation: operation,

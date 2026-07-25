@@ -142,7 +142,7 @@ func TestHTTPProviderResponseLimit(t *testing.T) {
 	}
 
 	gatewayError, ok := gw.AsError(err)
-	if !ok || gatewayError.Code != "response_too_large" {
+	if !ok || gatewayError.Code != gw.CodeResponseTooLarge {
 		t.Fatalf("expected response_too_large, got %v", err)
 	}
 }
