@@ -14,6 +14,7 @@ import gw "github.com/henryhale/gateway"
 ## Contents
 
 - [Overview](#overview)
+- [Quick start](#quick-start)
 - [Core types](#core-types)
 - [HTTP provider](#http-provider)
 - [Transport-independent provider](#transport-independent-provider)
@@ -35,6 +36,10 @@ Building a gateway means doing five things:
 3. Register providers with [`gw.New`](#gateway-construction).
 4. Pick a [routing strategy](#routing-strategies) and, optionally, [retry and fallback](#retry-and-fallback) policies.
 5. Call `HandleRequest` from any application framework — see [Framework integration](#framework-integration).
+
+## Quick start
+
+🚀 Learn by example - see [Random Quotes Generator](../examples/quotes/) showcasing how every concept you need.
 
 ## Core types
 
