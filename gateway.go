@@ -138,7 +138,13 @@ func (g *Gateway[RequestPayload, ResponsePayload]) HandleRequest(
 		)
 		firstSelection = false
 		if err != nil {
-			gatewayError := normalizeError(err, "", request.Operation, len(attempts)+1)
+			gatewayError := normalizeError(
+				requestContext,
+				err,
+				"",
+				request.Operation,
+				len(attempts)+1,
+			)
 			return zero, gatewayError
 		}
 
@@ -290,6 +296,15 @@ func (g *Gateway[RequestPayload, ResponsePayload]) selectProvider(
 			Operation: request.Operation,
 		}
 	}
+	_, used := usedProviders[selected.Name]
+	if used || !entry.provider.Supports(request.Operation) {
+		return nil, &GatewayError{
+			Kind:      ErrorInternal,
+			Code:      CodeRoutingIneligibleProvider,
+			Message:   fmt.Sprintf("routing strategy selected ineligible provider %q", selected.Name),
+			Operation: request.Operation,
+		}
+	}
 
 	return entry, nil
 }
@@ -335,6 +350,7 @@ func (g *Gateway[RequestPayload, ResponsePayload]) executeProvider(
 		}
 
 		gatewayError := normalizeError(
+			ctx,
 			err,
 			entry.provider.Name(),
 			request.Operation,

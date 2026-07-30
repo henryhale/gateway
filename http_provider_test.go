@@ -5,12 +5,26 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	gw "github.com/henryhale/gateway"
+	"github.com/henryhale/gateway/internal/testprovider"
 )
 
 type httpTestCodec struct{}
+
+type blockingRoundTripper struct {
+	calls atomic.Int32
+}
+
+// RoundTrip blocks until the HTTP client timeout cancels the request.
+func (t *blockingRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	t.calls.Add(1)
+	<-request.Context().Done()
+	return nil, request.Context().Err()
+}
 
 // Supports reports whether the test codec supports the test operation.
 func (httpTestCodec) Supports(operation gw.Operation) bool {
@@ -144,5 +158,156 @@ func TestHTTPProviderResponseLimit(t *testing.T) {
 	gatewayError, ok := gw.AsError(err)
 	if !ok || gatewayError.Code != gw.CodeResponseTooLarge {
 		t.Fatalf("expected response_too_large, got %v", err)
+	}
+}
+
+// TestHTTPProviderTimeoutRetries verifies client timeouts retain their retryable classification.
+func TestHTTPProviderTimeoutRetries(t *testing.T) {
+	transport := &blockingRoundTripper{}
+	provider := gw.NewHTTPProvider(
+		"slow",
+		gw.HTTPProviderConfig{
+			BaseURL: "https://provider.example",
+			Client: &http.Client{
+				Timeout:   2 * time.Millisecond,
+				Transport: transport,
+			},
+		},
+		httpTestCodec{},
+	)
+
+	gateway, err := gw.New[testRequest, testResponse](
+		gw.WithProviders(gw.UseProvider(provider)),
+		gw.WithRetry(gw.Retry{MaxAttempts: 2}),
+		gw.WithRequestTimeout(100*time.Millisecond),
+	)
+	if err != nil {
+		t.Fatalf("construct gateway: %v", err)
+	}
+
+	_, err = gateway.HandleRequest(context.Background(), gw.Request[testRequest]{
+		Operation: "test.http",
+	})
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+
+	gatewayError, ok := gw.AsError(err)
+	if !ok {
+		t.Fatalf("expected gateway error, got %v", err)
+	}
+	if gatewayError.Kind != gw.ErrorTimeout {
+		t.Fatalf("expected timeout kind, got %q", gatewayError.Kind)
+	}
+	if !gatewayError.Retryable || !gatewayError.Fallbackable {
+		t.Fatalf(
+			"expected retryable and fallbackable timeout, got retryable=%t fallbackable=%t",
+			gatewayError.Retryable,
+			gatewayError.Fallbackable,
+		)
+	}
+	if transport.calls.Load() != 2 {
+		t.Fatalf("expected two HTTP attempts, got %d", transport.calls.Load())
+	}
+}
+
+// TestGatewayTimeoutRemainsTerminal verifies the overall deadline is not retried as a provider timeout.
+func TestGatewayTimeoutRemainsTerminal(t *testing.T) {
+	transport := &blockingRoundTripper{}
+	provider := gw.NewHTTPProvider(
+		"slow",
+		gw.HTTPProviderConfig{
+			BaseURL: "https://provider.example",
+			Client: &http.Client{
+				Transport: transport,
+			},
+		},
+		httpTestCodec{},
+	)
+
+	gateway, err := gw.New[testRequest, testResponse](
+		gw.WithProviders(gw.UseProvider(provider)),
+		gw.WithRetry(gw.Retry{MaxAttempts: 2}),
+		gw.WithRequestTimeout(2*time.Millisecond),
+	)
+	if err != nil {
+		t.Fatalf("construct gateway: %v", err)
+	}
+
+	_, err = gateway.HandleRequest(context.Background(), gw.Request[testRequest]{
+		Operation: "test.http",
+	})
+	if err == nil {
+		t.Fatal("expected gateway timeout error")
+	}
+
+	gatewayError, ok := gw.AsError(err)
+	if !ok {
+		t.Fatalf("expected gateway error, got %v", err)
+	}
+	if gatewayError.Kind != gw.ErrorTimeout || gatewayError.Code != gw.CodeRequestTimeout {
+		t.Fatalf("expected request timeout, got kind=%q code=%q", gatewayError.Kind, gatewayError.Code)
+	}
+	if gatewayError.Retryable || gatewayError.Fallbackable {
+		t.Fatalf(
+			"expected terminal gateway timeout, got retryable=%t fallbackable=%t",
+			gatewayError.Retryable,
+			gatewayError.Fallbackable,
+		)
+	}
+	if transport.calls.Load() != 1 {
+		t.Fatalf("expected one HTTP attempt, got %d", transport.calls.Load())
+	}
+}
+
+// TestHTTPProviderTimeoutFallsBack verifies client timeouts can move to another provider.
+func TestHTTPProviderTimeoutFallsBack(t *testing.T) {
+	transport := &blockingRoundTripper{}
+	primary := gw.NewHTTPProvider(
+		"slow",
+		gw.HTTPProviderConfig{
+			BaseURL: "https://provider.example",
+			Client: &http.Client{
+				Timeout:   2 * time.Millisecond,
+				Transport: transport,
+			},
+		},
+		httpTestCodec{},
+	)
+	secondary := testprovider.New[testRequest, testResponse](
+		"secondary",
+		[]gw.Operation{"test.http"},
+		testprovider.Outcome[testResponse]{Response: testResponse{Value: "fallback"}},
+	)
+
+	gateway, err := gw.New[testRequest, testResponse](
+		gw.WithProviders(gw.UseProvider(primary), gw.UseProvider(secondary)),
+		gw.WithRouting(gw.Priority("slow", "secondary")),
+		gw.WithFallback(gw.FallbackOn(gw.ErrorTimeout)),
+		gw.WithRequestTimeout(100*time.Millisecond),
+	)
+	if err != nil {
+		t.Fatalf("construct gateway: %v", err)
+	}
+
+	result, err := gateway.HandleRequest(context.Background(), gw.Request[testRequest]{
+		Operation: "test.http",
+	})
+	if err != nil {
+		t.Fatalf("handle request: %v", err)
+	}
+	if result.Provider != "secondary" || result.Payload.Value != "fallback" {
+		t.Fatalf(
+			"expected secondary fallback response, got provider=%q payload=%q",
+			result.Provider,
+			result.Payload.Value,
+		)
+	}
+	if transport.calls.Load() != 1 || secondary.Calls() != 1 {
+		t.Fatalf(
+			"expected one primary and one secondary call, got primary=%d secondary=%d",
+			transport.calls.Load(),
+			secondary.Calls(),
+		)
 	}
 }

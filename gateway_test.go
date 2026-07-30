@@ -18,6 +18,23 @@ type testResponse struct {
 	Value string
 }
 
+type fixedRoutingStrategy struct {
+	provider string
+}
+
+// Name returns the test routing strategy name.
+func (s fixedRoutingStrategy) Name() string {
+	return "fixed"
+}
+
+// Select always returns the configured provider, regardless of the candidates.
+func (s fixedRoutingStrategy) Select(
+	_ context.Context,
+	_ []gw.ProviderState,
+) (gw.ProviderState, error) {
+	return gw.ProviderState{Name: s.provider}, nil
+}
+
 // TestGatewayPriorityRouting verifies that priority routing selects the configured provider.
 func TestGatewayPriorityRouting(t *testing.T) {
 	primary := testprovider.New[testRequest, testResponse](
@@ -243,5 +260,94 @@ func TestNewRejectsDuplicateProviders(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("expected duplicate provider error")
+	}
+}
+
+// TestGatewayRejectsIneligibleRoutingSelection verifies custom strategies cannot bypass eligibility.
+func TestGatewayRejectsIneligibleRoutingSelection(t *testing.T) {
+	eligible := testprovider.New[testRequest, testResponse](
+		"eligible",
+		[]gw.Operation{"test.execute"},
+		testprovider.Outcome[testResponse]{Response: testResponse{Value: "eligible"}},
+	)
+	ineligible := testprovider.New[testRequest, testResponse](
+		"ineligible",
+		nil,
+		testprovider.Outcome[testResponse]{Response: testResponse{Value: "ineligible"}},
+	)
+
+	gateway, err := gw.New[testRequest, testResponse](
+		gw.WithProviders(gw.UseProvider(eligible), gw.UseProvider(ineligible)),
+		gw.WithRouting(fixedRoutingStrategy{provider: "ineligible"}),
+	)
+	if err != nil {
+		t.Fatalf("construct gateway: %v", err)
+	}
+
+	_, err = gateway.HandleRequest(context.Background(), gw.Request[testRequest]{
+		Operation: "test.execute",
+	})
+	if err == nil {
+		t.Fatal("expected ineligible routing selection error")
+	}
+
+	gatewayError, ok := gw.AsError(err)
+	if !ok {
+		t.Fatalf("expected gateway error, got %v", err)
+	}
+	if gatewayError.Code != gw.CodeRoutingIneligibleProvider {
+		t.Fatalf("expected ineligible routing code, got %q", gatewayError.Code)
+	}
+	if eligible.Calls() != 0 || ineligible.Calls() != 0 {
+		t.Fatalf(
+			"expected no provider calls, got eligible=%d ineligible=%d",
+			eligible.Calls(),
+			ineligible.Calls(),
+		)
+	}
+}
+
+// TestGatewayRejectsUsedRoutingSelection verifies fallback cannot reselect an attempted provider.
+func TestGatewayRejectsUsedRoutingSelection(t *testing.T) {
+	primary := testprovider.New[testRequest, testResponse](
+		"primary",
+		[]gw.Operation{"test.execute"},
+		testprovider.Outcome[testResponse]{Error: gw.HTTPProviderError(503, "down", "unavailable")},
+	)
+	secondary := testprovider.New[testRequest, testResponse](
+		"secondary",
+		[]gw.Operation{"test.execute"},
+		testprovider.Outcome[testResponse]{Response: testResponse{Value: "secondary"}},
+	)
+
+	gateway, err := gw.New[testRequest, testResponse](
+		gw.WithProviders(gw.UseProvider(primary), gw.UseProvider(secondary)),
+		gw.WithRouting(fixedRoutingStrategy{provider: "primary"}),
+		gw.WithFallback(gw.FallbackOn(gw.ErrorUnavailable)),
+	)
+	if err != nil {
+		t.Fatalf("construct gateway: %v", err)
+	}
+
+	_, err = gateway.HandleRequest(context.Background(), gw.Request[testRequest]{
+		Operation: "test.execute",
+	})
+	if err == nil {
+		t.Fatal("expected used routing selection error")
+	}
+
+	gatewayError, ok := gw.AsError(err)
+	if !ok {
+		t.Fatalf("expected gateway error, got %v", err)
+	}
+	if gatewayError.Code != gw.CodeRoutingIneligibleProvider {
+		t.Fatalf("expected ineligible routing code, got %q", gatewayError.Code)
+	}
+	if primary.Calls() != 1 || secondary.Calls() != 0 {
+		t.Fatalf(
+			"expected one primary and no secondary calls, got primary=%d secondary=%d",
+			primary.Calls(),
+			secondary.Calls(),
+		)
 	}
 }

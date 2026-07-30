@@ -53,6 +53,8 @@ const (
 	CodeRoutingFailed ErrorCode = "routing_failed"
 	// CodeRoutingUnknownProvider indicates the routing strategy selected an unregistered provider.
 	CodeRoutingUnknownProvider ErrorCode = "routing_unknown_provider"
+	// CodeRoutingIneligibleProvider indicates the routing strategy selected a provider outside its candidate set.
+	CodeRoutingIneligibleProvider ErrorCode = "routing_ineligible_provider"
 	// CodeRetryLoopExhausted indicates the provider retry loop ended without a result.
 	CodeRetryLoopExhausted ErrorCode = "retry_loop_exhausted"
 	// CodeRequestCanceled indicates the caller canceled the request context.
@@ -157,16 +159,19 @@ func classifyHTTPStatus(statusCode int) ErrorKind {
 }
 
 // normalizeError adds request and provider context to an arbitrary error.
-func normalizeError(err error, provider string, operation Operation, attempt int) *GatewayError {
+func normalizeError(
+	ctx context.Context,
+	err error,
+	provider string,
+	operation Operation,
+	attempt int,
+) *GatewayError {
 	if err == nil {
 		return nil
 	}
 
-	if errors.Is(err, context.DeadlineExceeded) {
-		return contextGatewayError(err, provider, operation, attempt)
-	}
-	if errors.Is(err, context.Canceled) {
-		return contextGatewayError(err, provider, operation, attempt)
+	if contextError := ctx.Err(); contextError != nil {
+		return contextGatewayError(contextError, provider, operation, attempt)
 	}
 
 	if gatewayError, ok := AsError(err); ok {
@@ -181,6 +186,13 @@ func normalizeError(err error, provider string, operation Operation, attempt int
 			cloned.Attempt = attempt
 		}
 		return &cloned
+	}
+
+	if errors.Is(err, context.DeadlineExceeded) {
+		return contextGatewayError(err, provider, operation, attempt)
+	}
+	if errors.Is(err, context.Canceled) {
+		return contextGatewayError(err, provider, operation, attempt)
 	}
 
 	return &GatewayError{

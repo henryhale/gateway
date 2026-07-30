@@ -74,7 +74,7 @@ result, err := paymentGateway.HandleRequest(ctx, gw.Request[ChargeRequest]{
 
 ## Installation
 
-- Go 1.23 or later.
+- Go 1.26.5 or later.
 - No third-party runtime dependencies.
 
 ```bash
