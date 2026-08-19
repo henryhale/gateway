@@ -1,353 +1,283 @@
-package gateway_test
+package gateway
 
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
-
-	gw "github.com/henryhale/gateway"
-	"github.com/henryhale/gateway/internal/testprovider"
 )
 
-type testRequest struct {
-	Value string
-}
+var errTemporary = errors.New("temporary")
 
-type testResponse struct {
-	Value string
-}
-
-type fixedRoutingStrategy struct {
-	provider string
-}
-
-// Name returns the test routing strategy name.
-func (s fixedRoutingStrategy) Name() string {
-	return "fixed"
-}
-
-// Select always returns the configured provider, regardless of the candidates.
-func (s fixedRoutingStrategy) Select(
-	_ context.Context,
-	_ []gw.ProviderState,
-) (gw.ProviderState, error) {
-	return gw.ProviderState{Name: s.provider}, nil
-}
-
-// TestGatewayPriorityRouting verifies that priority routing selects the configured provider.
-func TestGatewayPriorityRouting(t *testing.T) {
-	primary := testprovider.New[testRequest, testResponse](
-		"primary",
-		[]gw.Operation{"test.execute"},
-		testprovider.Outcome[testResponse]{Response: testResponse{Value: "primary"}},
-	)
-	secondary := testprovider.New[testRequest, testResponse](
-		"secondary",
-		[]gw.Operation{"test.execute"},
-		testprovider.Outcome[testResponse]{Response: testResponse{Value: "secondary"}},
-	)
-
-	gateway, err := gw.New[testRequest, testResponse](
-		gw.WithProviders(
-			gw.UseProvider(primary, gw.WithProviderPriority(1)),
-			gw.UseProvider(secondary, gw.WithProviderPriority(2)),
+// TestGatewayRoutesByOperation verifies static operation filtering.
+func TestGatewayRoutesByOperation(t *testing.T) {
+	first := ProviderFunc(func(context.Context, Request) (any, error) { return "first", nil })
+	second := ProviderFunc(func(context.Context, Request) (any, error) { return "second", nil })
+	g, err := New(
+		WithProviders(
+			UseProvider("first", first, WithOperations("collect")),
+			UseProvider("second", second, WithOperations("refund")),
 		),
-		gw.WithRouting(gw.Priority()),
 	)
 	if err != nil {
-		t.Fatalf("construct gateway:  %v", err)
+		t.Fatal(err)
 	}
-
-	result, err := gateway.HandleRequest(context.Background(), gw.Request[testRequest]{
-		Operation: "test.execute",
-		Payload:   testRequest{Value: "input"},
-	})
+	result, err := g.HandleRequest(context.Background(), NewRequest("refund", struct{}{}))
 	if err != nil {
-		t.Fatalf("handle request: %v", err)
+		t.Fatal(err)
 	}
-	if result.Provider != "primary" {
-		t.Fatalf("expected primary provider, got %q", result.Provider)
-	}
-	if result.Payload.Value != "primary" {
-		t.Fatalf("expected primary response, got %q", result.Payload.Value)
+	if result.Provider() != "second" {
+		t.Fatalf("provider = %q, want second", result.Provider())
 	}
 }
 
-// TestGatewayFallback verifies that eligible failures move to another provider.
-func TestGatewayFallback(t *testing.T) {
-	primary := testprovider.New[testRequest, testResponse](
-		"primary",
-		[]gw.Operation{"test.execute"},
-		testprovider.Outcome[testResponse]{Error: gw.HTTPProviderError(503, "down", "unavailable")},
-	)
-	secondary := testprovider.New[testRequest, testResponse](
-		"secondary",
-		[]gw.Operation{"test.execute"},
-		testprovider.Outcome[testResponse]{Response: testResponse{Value: "secondary"}},
-	)
+// TestGatewayFilter verifies dynamic pre-call eligibility filters.
+func TestGatewayFilter(t *testing.T) {
+	type payload struct{ Country string }
+	filtered := ProviderFunc(func(context.Context, Request) (any, error) { return "filtered", nil })
+	fallback := ProviderFunc(func(context.Context, Request) (any, error) { return "fallback", nil })
+	countryFilter := FilterFunc(func(_ context.Context, request Request, _ Candidate) (bool, error) {
+		value := request.Value().(payload)
+		return value.Country == "UG", nil
+	})
+	g, err := New(WithProviders(
+		UseProvider("filtered", filtered, WithFilter(countryFilter), WithProviderPriority(0)),
+		UseProvider("fallback", fallback, WithProviderPriority(1)),
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := g.HandleRequest(context.Background(), NewRequest("send", payload{Country: "KE"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Provider() != "fallback" {
+		t.Fatalf("provider = %q, want fallback", result.Provider())
+	}
+}
 
-	gateway, err := gw.New[testRequest, testResponse](
-		gw.WithProviders(
-			gw.UseProvider(primary, gw.WithProviderPriority(1)),
-			gw.UseProvider(secondary, gw.WithProviderPriority(2)),
+// TestGatewayFailover verifies failed providers are excluded from a request chain.
+func TestGatewayFailover(t *testing.T) {
+	var firstCalls atomic.Int64
+	first := ProviderFunc(func(context.Context, Request) (any, error) {
+		firstCalls.Add(1)
+		return nil, errTemporary
+	})
+	second := ProviderFunc(func(context.Context, Request) (any, error) { return "ok", nil })
+	g, err := New(
+		WithProviders(
+			UseProvider("first", first, WithProviderPriority(0)),
+			UseProvider("second", second, WithProviderPriority(1)),
 		),
-		gw.WithRouting(gw.Priority()),
-		gw.WithFallback(gw.FallbackOn(gw.ErrorUnavailable)),
+		WithFailurePolicy(FailoverWhen(func(err error) bool { return errors.Is(err, errTemporary) })),
 	)
 	if err != nil {
-		t.Fatalf("construct gateway:  %v", err)
+		t.Fatal(err)
 	}
+	result, err := g.HandleRequest(context.Background(), NewRequest("send", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Provider() != "second" {
+		t.Fatalf("provider = %q, want second", result.Provider())
+	}
+	if firstCalls.Load() != 1 {
+		t.Fatalf("first provider calls = %d, want 1", firstCalls.Load())
+	}
+}
 
-	result, err := gateway.HandleRequest(context.Background(), gw.Request[testRequest]{
-		Operation: "test.execute",
+// TestGatewayRetryThenFailover verifies bounded same-provider retries followed by failover.
+func TestGatewayRetryThenFailover(t *testing.T) {
+	var firstCalls atomic.Int64
+	first := ProviderFunc(func(context.Context, Request) (any, error) {
+		firstCalls.Add(1)
+		return nil, errTemporary
 	})
+	second := ProviderFunc(func(context.Context, Request) (any, error) { return "ok", nil })
+	g, err := New(
+		WithProviders(
+			UseProvider("first", first, WithProviderPriority(0)),
+			UseProvider("second", second, WithProviderPriority(1)),
+		),
+		WithFailurePolicy(RetryThenFailover(2, NoBackoff(), func(err error) bool { return errors.Is(err, errTemporary) })),
+		WithMaxAttempts(8),
+	)
 	if err != nil {
-		t.Fatalf("handle request: %v", err)
+		t.Fatal(err)
 	}
-	if result.Provider != "secondary" {
-		t.Fatalf("expected secondary provider, got %q", result.Provider)
+	result, err := g.HandleRequest(context.Background(), NewRequest("send", nil))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(result.Attempts) != 2 {
-		t.Fatalf("expected two attempts, got %d", len(result.Attempts))
+	if result.Provider() != "second" {
+		t.Fatalf("provider = %q, want second", result.Provider())
+	}
+	if firstCalls.Load() != 3 {
+		t.Fatalf("first provider calls = %d, want 3", firstCalls.Load())
 	}
 }
 
-// TestGatewayRetry verifies that retryable failures are retried on the same provider.
-func TestGatewayRetry(t *testing.T) {
-	provider := testprovider.New[testRequest, testResponse](
-		"provider",
-		[]gw.Operation{"test.execute"},
-		testprovider.Outcome[testResponse]{Error: gw.HTTPProviderError(429, "limited", "retry")},
-		testprovider.Outcome[testResponse]{Response: testResponse{Value: "ok"}},
-	)
-
-	gateway, err := gw.New[testRequest, testResponse](
-		gw.WithProviders(gw.UseProvider(provider)),
-		gw.WithRetry(gw.Retry{
-			MaxAttempts: 2,
-			Backoff:     gw.ExponentialBackoff{Initial: time.Millisecond, Maximum: time.Millisecond},
-		}),
-	)
-	if err != nil {
-		t.Fatalf("construct gateway:  %v", err)
-	}
-
-	result, err := gateway.HandleRequest(
-		context.Background(),
-		gw.Request[testRequest]{
-			Operation: "test.execute",
-		},
-	)
-	if err != nil {
-		t.Fatalf("handle request: %v", err)
-	}
-	if provider.Calls() != 2 {
-		t.Fatalf("expected two provider calls, got %d", provider.Calls())
-	}
-	if len(result.Attempts) != 2 {
-		t.Fatalf("expected two attempts, got %d", len(result.Attempts))
-	}
-}
-
-// TestGatewayProviderHint verifies that a request can select a registered provider directly.
+// TestGatewayProviderHint verifies a hint is preferred on the first attempt.
 func TestGatewayProviderHint(t *testing.T) {
-	primary := testprovider.New[testRequest, testResponse](
-		"primary",
-		[]gw.Operation{"test.execute"},
-		testprovider.Outcome[testResponse]{Response: testResponse{Value: "primary"}},
-	)
-	secondary := testprovider.New[testRequest, testResponse](
-		"secondary",
-		[]gw.Operation{"test.execute"},
-		testprovider.Outcome[testResponse]{Response: testResponse{Value: "secondary"}},
-	)
-
-	gateway, err := gw.New[testRequest, testResponse](
-		gw.WithProviders(gw.UseProvider(primary), gw.UseProvider(secondary)),
-	)
+	first := ProviderFunc(func(context.Context, Request) (any, error) { return "first", nil })
+	second := ProviderFunc(func(context.Context, Request) (any, error) { return "second", nil })
+	g, err := New(WithProviders(UseProvider("first", first), UseProvider("second", second)))
 	if err != nil {
-		t.Fatalf("construct gateway:  %v", err)
+		t.Fatal(err)
 	}
-
-	result, err := gateway.HandleRequest(context.Background(), gw.Request[testRequest]{
-		Operation:    "test.execute",
-		ProviderHint: "secondary",
-	})
+	result, err := g.HandleRequest(context.Background(), NewRequest("send", nil, WithProviderHint("second")))
 	if err != nil {
-		t.Fatalf("handle request: %v", err)
+		t.Fatal(err)
 	}
-	if result.Provider != "secondary" {
-		t.Fatalf("expected secondary provider, got %q", result.Provider)
+	if result.Provider() != "second" {
+		t.Fatalf("provider = %q, want second", result.Provider())
 	}
 }
 
-// TestGatewayRejectsUnsupportedOperation verifies operation validation.
-func TestGatewayRejectsUnsupportedOperation(t *testing.T) {
-	provider := testprovider.New[testRequest, testResponse](
-		"provider",
-		[]gw.Operation{"test.execute"},
-	)
-
-	gateway, err := gw.New[testRequest, testResponse](
-		gw.WithProviders(gw.UseProvider(provider)),
+// TestGatewayCooldown verifies repeated matching failures temporarily remove a provider.
+func TestGatewayCooldown(t *testing.T) {
+	bad := ProviderFunc(func(context.Context, Request) (any, error) { return nil, errTemporary })
+	good := ProviderFunc(func(context.Context, Request) (any, error) { return "ok", nil })
+	g, err := New(
+		WithProviders(
+			UseProvider("bad", bad,
+				WithProviderPriority(0),
+				WithCooldown(CooldownConfig{Failures: 1, Duration: time.Second, When: func(err error) bool { return errors.Is(err, errTemporary) }}),
+			),
+			UseProvider("good", good, WithProviderPriority(1)),
+		),
+		WithFailurePolicy(FailoverWhen(func(error) bool { return true })),
 	)
 	if err != nil {
-		t.Fatalf("construct gateway:  %v", err)
+		t.Fatal(err)
 	}
-
-	_, err = gateway.HandleRequest(context.Background(), gw.Request[testRequest]{
-		Operation: "test.unsupported",
-	})
-	if err == nil {
-		t.Fatal("expected unsupported operation error")
+	if _, err := g.HandleRequest(context.Background(), NewRequest("send", nil)); err != nil {
+		t.Fatal(err)
 	}
-
-	gatewayError, ok := gw.AsError(err)
-	if !ok || gatewayError.Kind != gw.ErrorValidation {
-		t.Fatalf("expected validation error, got %v", err)
+	result, err := g.HandleRequest(context.Background(), NewRequest("send", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Provider() != "good" {
+		t.Fatalf("provider = %q, want good while bad is cooling down", result.Provider())
 	}
 }
 
-// TestGatewayRequestTimeout verifies the overall request deadline.
-func TestGatewayRequestTimeout(t *testing.T) {
-	provider := testprovider.New[testRequest, testResponse](
-		"provider",
-		[]gw.Operation{"test.execute"},
-		testprovider.Outcome[testResponse]{Delay: 50 * time.Millisecond},
-	)
-
-	gateway, err := gw.New[testRequest, testResponse](
-		gw.WithProviders(gw.UseProvider(provider)),
-		gw.WithRequestTimeout(5*time.Millisecond),
-	)
-	if err != nil {
-		t.Fatalf("construct gateway:  %v", err)
-	}
-
-	_, err = gateway.HandleRequest(context.Background(), gw.Request[testRequest]{
-		Operation: "test.execute",
+// TestGatewayTimeout verifies a configured timeout bounds provider execution.
+func TestGatewayTimeout(t *testing.T) {
+	slow := ProviderFunc(func(ctx context.Context, _ Request) (any, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
 	})
-	if err == nil {
-		t.Fatal("expected timeout error")
+	g, err := New(WithProviders(UseProvider("slow", slow)), WithRequestTimeout(20*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	gatewayError, ok := gw.AsError(err)
+	_, err = g.HandleRequest(context.Background(), NewRequest("slow", nil))
+	if err == nil {
+		t.Fatal("expected deadline error")
+	}
+	gatewayError, ok := AsError(err)
 	if !ok {
-		t.Fatalf("expected gateway error, got %v", err)
+		t.Fatalf("error type = %T, want *gateway.Error", err)
 	}
-	if gatewayError.Kind != gw.ErrorTimeout {
-		t.Fatalf("expected timeout error, got %s", gatewayError.Kind)
-	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected deadline cause, got %v", err)
+	if gatewayError.Code != CodeProviderFailed && gatewayError.Code != CodeDeadlineExceeded {
+		t.Fatalf("code = %q, want provider_failed or deadline_exceeded", gatewayError.Code)
 	}
 }
 
-// TestNewRejectsDuplicateProviders verifies provider name uniqueness.
-func TestNewRejectsDuplicateProviders(t *testing.T) {
-	first := testprovider.New[testRequest, testResponse](
-		"duplicate",
-		[]gw.Operation{"test.execute"},
-	)
-	second := testprovider.New[testRequest, testResponse](
-		"duplicate",
-		[]gw.Operation{"test.execute"},
-	)
-
-	_, err := gw.New[testRequest, testResponse](
-		gw.WithProviders(gw.UseProvider(first), gw.UseProvider(second)),
-	)
-	if err == nil {
-		t.Fatal("expected duplicate provider error")
-	}
-}
-
-// TestGatewayRejectsIneligibleRoutingSelection verifies custom strategies cannot bypass eligibility.
-func TestGatewayRejectsIneligibleRoutingSelection(t *testing.T) {
-	eligible := testprovider.New[testRequest, testResponse](
-		"eligible",
-		[]gw.Operation{"test.execute"},
-		testprovider.Outcome[testResponse]{Response: testResponse{Value: "eligible"}},
-	)
-	ineligible := testprovider.New[testRequest, testResponse](
-		"ineligible",
-		nil,
-		testprovider.Outcome[testResponse]{Response: testResponse{Value: "ineligible"}},
-	)
-
-	gateway, err := gw.New[testRequest, testResponse](
-		gw.WithProviders(gw.UseProvider(eligible), gw.UseProvider(ineligible)),
-		gw.WithRouting(fixedRoutingStrategy{provider: "ineligible"}),
-	)
-	if err != nil {
-		t.Fatalf("construct gateway: %v", err)
-	}
-
-	_, err = gateway.HandleRequest(context.Background(), gw.Request[testRequest]{
-		Operation: "test.execute",
+// TestGatewayMaxInFlight verifies a provider's local bulkhead is never exceeded.
+func TestGatewayMaxInFlight(t *testing.T) {
+	var active atomic.Int64
+	var maximum atomic.Int64
+	provider := ProviderFunc(func(context.Context, Request) (any, error) {
+		current := active.Add(1)
+		for {
+			old := maximum.Load()
+			if current <= old || maximum.CompareAndSwap(old, current) {
+				break
+			}
+		}
+		time.Sleep(2 * time.Millisecond)
+		active.Add(-1)
+		return "ok", nil
 	})
-	if err == nil {
-		t.Fatal("expected ineligible routing selection error")
+	backup := ProviderFunc(func(context.Context, Request) (any, error) { return "backup", nil })
+	g, err := New(WithProviders(
+		UseProvider("limited", provider, WithMaxInFlight(2), WithProviderPriority(0)),
+		UseProvider("backup", backup, WithProviderPriority(1)),
+	))
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	gatewayError, ok := gw.AsError(err)
-	if !ok {
-		t.Fatalf("expected gateway error, got %v", err)
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = g.HandleRequest(context.Background(), NewRequest("send", nil))
+		}()
 	}
-	if gatewayError.Code != gw.CodeRoutingIneligibleProvider {
-		t.Fatalf("expected ineligible routing code, got %q", gatewayError.Code)
-	}
-	if eligible.Calls() != 0 || ineligible.Calls() != 0 {
-		t.Fatalf(
-			"expected no provider calls, got eligible=%d ineligible=%d",
-			eligible.Calls(),
-			ineligible.Calls(),
-		)
+	wg.Wait()
+	if maximum.Load() > 2 {
+		t.Fatalf("max concurrent calls = %d, want <= 2", maximum.Load())
 	}
 }
 
-// TestGatewayRejectsUsedRoutingSelection verifies fallback cannot reselect an attempted provider.
-func TestGatewayRejectsUsedRoutingSelection(t *testing.T) {
-	primary := testprovider.New[testRequest, testResponse](
-		"primary",
-		[]gw.Operation{"test.execute"},
-		testprovider.Outcome[testResponse]{Error: gw.HTTPProviderError(503, "down", "unavailable")},
-	)
-	secondary := testprovider.New[testRequest, testResponse](
-		"secondary",
-		[]gw.Operation{"test.execute"},
-		testprovider.Outcome[testResponse]{Response: testResponse{Value: "secondary"}},
-	)
-
-	gateway, err := gw.New[testRequest, testResponse](
-		gw.WithProviders(gw.UseProvider(primary), gw.UseProvider(secondary)),
-		gw.WithRouting(fixedRoutingStrategy{provider: "primary"}),
-		gw.WithFallback(gw.FallbackOn(gw.ErrorUnavailable)),
-	)
-	if err != nil {
-		t.Fatalf("construct gateway: %v", err)
-	}
-
-	_, err = gateway.HandleRequest(context.Background(), gw.Request[testRequest]{
-		Operation: "test.execute",
+// TestGatewayConcurrentUse verifies one gateway can serve many goroutines safely.
+func TestGatewayConcurrentUse(t *testing.T) {
+	var calls atomic.Int64
+	provider := ProviderFunc(func(context.Context, Request) (any, error) {
+		calls.Add(1)
+		return 42, nil
 	})
-	if err == nil {
-		t.Fatal("expected used routing selection error")
+	g, err := New(WithProviders(UseProvider("provider", provider)), WithRouting(RoundRobin()))
+	if err != nil {
+		t.Fatal(err)
 	}
+	const requests = 1000
+	var wg sync.WaitGroup
+	wg.Add(requests)
+	for i := 0; i < requests; i++ {
+		go func() {
+			defer wg.Done()
+			result, requestErr := g.HandleRequest(context.Background(), NewRequest("read", i))
+			if requestErr != nil {
+				t.Errorf("HandleRequest: %v", requestErr)
+				return
+			}
+			if value, ok := ValueAs[int](result); !ok || value != 42 {
+				t.Errorf("result = %#v, want 42", result.Value())
+			}
+		}()
+	}
+	wg.Wait()
+	if calls.Load() != requests {
+		t.Fatalf("calls = %d, want %d", calls.Load(), requests)
+	}
+}
 
-	gatewayError, ok := gw.AsError(err)
-	if !ok {
-		t.Fatalf("expected gateway error, got %v", err)
+// TestGatewayOpaquePayload verifies gateway preserves payload identity.
+func TestGatewayOpaquePayload(t *testing.T) {
+	type payload struct{ Value int }
+	input := &payload{Value: 7}
+	provider := ProviderFunc(func(_ context.Context, request Request) (any, error) {
+		if request.Value() != input {
+			t.Fatal("gateway changed payload identity")
+		}
+		return request.Value(), nil
+	})
+	g, err := New(WithProviders(UseProvider("provider", provider)))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if gatewayError.Code != gw.CodeRoutingIneligibleProvider {
-		t.Fatalf("expected ineligible routing code, got %q", gatewayError.Code)
+	result, err := g.HandleRequest(context.Background(), NewRequest("echo", input))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if primary.Calls() != 1 || secondary.Calls() != 0 {
-		t.Fatalf(
-			"expected one primary and no secondary calls, got primary=%d secondary=%d",
-			primary.Calls(),
-			secondary.Calls(),
-		)
+	if result.Value() != input {
+		t.Fatal("gateway changed response identity")
 	}
 }

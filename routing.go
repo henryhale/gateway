@@ -2,261 +2,330 @@ package gateway
 
 import (
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/binary"
 	"errors"
-	"sort"
-	"sync"
+	"hash/fnv"
+	"math"
+	"sync/atomic"
 	"time"
 )
 
-// RoutingStrategy selects one provider from the currently eligible candidates.
+// Candidate is an immutable snapshot of an eligible provider used for routing.
+type Candidate struct {
+	index           int
+	id              ProviderID
+	priority        int
+	weight          uint32
+	cost            float64
+	observedLatency time.Duration
+	inFlight        int64
+	total           uint64
+	failures        uint64
+}
+
+// ID returns the provider identifier.
+func (c Candidate) ID() ProviderID { return c.id }
+
+// Priority returns the provider's configured priority.
+func (c Candidate) Priority() int { return c.priority }
+
+// Weight returns the provider's configured routing weight.
+func (c Candidate) Weight() uint32 { return c.weight }
+
+// Cost returns the provider's application-defined normalized cost.
+func (c Candidate) Cost() float64 { return c.cost }
+
+// ObservedLatency returns the provider's locally observed EWMA latency.
+func (c Candidate) ObservedLatency() time.Duration { return c.observedLatency }
+
+// InFlight returns the number of locally active calls at selection time.
+func (c Candidate) InFlight() int64 { return c.inFlight }
+
+// FailureRate returns the provider's observed local failure ratio.
+func (c Candidate) FailureRate() float64 {
+	if c.total == 0 {
+		return 0
+	}
+	return float64(c.failures) / float64(c.total)
+}
+
+// RoutingStrategy selects one index from the provided candidate slice.
+//
+// Implementations must be concurrency-safe and must not retain candidates after
+// Select returns because the gateway may reuse the backing storage.
 type RoutingStrategy interface {
-	// Name returns the strategy identifier used in diagnostics.
-	Name() string
-
-	// Select chooses one candidate or returns an error when none can be selected.
-	Select(ctx context.Context, candidates []ProviderState) (ProviderState, error)
+	Select(context.Context, Request, []Candidate) (int, error)
 }
 
-// CandidateScorer assigns a lower-is-better score to a provider candidate.
-type CandidateScorer interface {
-	// Score returns a lower-is-better score for a candidate.
-	Score(candidate ProviderState) float64
+// RoutingFunc adapts a function to the RoutingStrategy interface.
+type RoutingFunc func(context.Context, Request, []Candidate) (int, error)
+
+// Select delegates provider selection to the adapted function.
+func (f RoutingFunc) Select(ctx context.Context, request Request, candidates []Candidate) (int, error) {
+	return f(ctx, request, candidates)
 }
 
-type candidateScoreFunc func(candidate ProviderState) float64
-
-// Score returns a lower-is-better score for a candidate.
-func (f candidateScoreFunc) Score(candidate ProviderState) float64 {
-	return f(candidate)
+// Scorer assigns a lower-is-better score to a routing candidate.
+type Scorer interface {
+	Score(Request, Candidate) float64
 }
 
-type priorityStrategy struct {
-	order map[string]int
+// ScoreFunc adapts a function to the Scorer interface.
+type ScoreFunc func(Request, Candidate) float64
+
+// Score delegates scoring to the adapted function.
+func (f ScoreFunc) Score(request Request, candidate Candidate) float64 {
+	return f(request, candidate)
 }
 
-// Priority creates a strategy that follows the supplied provider order.
-func Priority(providerNames ...string) RoutingStrategy {
-	order := make(map[string]int, len(providerNames))
-	for index, name := range providerNames {
-		order[name] = index
-	}
-	return &priorityStrategy{order: order}
-}
-
-// Name returns the built-in strategy identifier.
-func (s *priorityStrategy) Name() string {
-	return "priority"
-}
-
-// Select chooses the candidate with the lowest configured priority.
-func (s *priorityStrategy) Select(
-	_ context.Context,
-	candidates []ProviderState,
-) (ProviderState, error) {
-	if len(candidates) == 0 {
-		return ProviderState{}, errors.New("gateway: priority routing: no candidates")
-	}
-
-	ordered := append([]ProviderState(nil), candidates...)
-	sort.SliceStable(ordered, func(i int, j int) bool {
-		left, leftConfigured := s.order[ordered[i].Name]
-		right, rightConfigured := s.order[ordered[j].Name]
-
-		switch {
-		case leftConfigured && rightConfigured:
-			return left < right
-		case leftConfigured:
-			return true
-		case rightConfigured:
-			return false
-		default:
-			return ordered[i].Priority < ordered[j].Priority
+// Priority selects the lowest configured priority, optionally honoring an explicit ID order.
+func Priority(ids ...ProviderID) RoutingStrategy {
+	order := make(map[ProviderID]int, len(ids))
+	for i, id := range ids {
+		if _, exists := order[id]; !exists {
+			order[id] = i
 		}
+	}
+	return RoutingFunc(func(_ context.Context, _ Request, candidates []Candidate) (int, error) {
+		if len(candidates) == 0 {
+			return -1, errors.New("gateway: priority routing received no candidates")
+		}
+		if len(order) > 0 {
+			bestIndex := -1
+			bestRank := math.MaxInt
+			for i, candidate := range candidates {
+				if rank, ok := order[candidate.id]; ok && rank < bestRank {
+					bestIndex = i
+					bestRank = rank
+				}
+			}
+			if bestIndex >= 0 {
+				return bestIndex, nil
+			}
+		}
+		bestIndex := 0
+		bestPriority := candidates[0].priority
+		for i := 1; i < len(candidates); i++ {
+			if candidates[i].priority < bestPriority {
+				bestIndex = i
+				bestPriority = candidates[i].priority
+			}
+		}
+		return bestIndex, nil
 	})
-
-	return ordered[0], nil
 }
 
-type roundRobinStrategy struct {
-	mu   sync.Mutex
-	next int
-}
+type roundRobinStrategy struct{ counter atomic.Uint64 }
 
-// RoundRobin creates a concurrency-safe round-robin routing strategy.
-func RoundRobin() RoutingStrategy {
-	return &roundRobinStrategy{}
-}
+// RoundRobin selects eligible providers in a concurrency-safe rotating order.
+func RoundRobin() RoutingStrategy { return &roundRobinStrategy{} }
 
-// Name returns the built-in strategy identifier.
-func (s *roundRobinStrategy) Name() string {
-	return "round_robin"
-}
-
-// Select chooses the next candidate in a stable sorted rotation.
-func (s *roundRobinStrategy) Select(
-	_ context.Context,
-	candidates []ProviderState,
-) (ProviderState, error) {
+// Select returns the next round-robin candidate index.
+func (s *roundRobinStrategy) Select(_ context.Context, _ Request, candidates []Candidate) (int, error) {
 	if len(candidates) == 0 {
-		return ProviderState{}, errors.New("gateway: round-robin routing: no candidates")
+		return -1, errors.New("gateway: round-robin routing received no candidates")
 	}
-
-	ordered := append([]ProviderState(nil), candidates...)
-	sort.SliceStable(ordered, func(i int, j int) bool {
-		return ordered[i].Name < ordered[j].Name
-	})
-
-	s.mu.Lock()
-	selected := ordered[s.next%len(ordered)]
-	s.next = (s.next + 1) % len(ordered)
-	s.mu.Unlock()
-
-	return selected, nil
+	n := s.counter.Add(1) - 1
+	return int(n % uint64(len(candidates))), nil
 }
 
-type weightedStrategy struct {
-	weights map[string]int
-}
+type fastRand struct{ state atomic.Uint64 }
 
-// Weighted creates a weighted-random routing strategy.
-func Weighted(weights map[string]int) RoutingStrategy {
-	copied := make(map[string]int, len(weights))
-	for name, weight := range weights {
-		copied[name] = weight
+// newFastRand creates a lock-free pseudo-random source seeded from crypto/rand.
+func newFastRand() *fastRand {
+	var seedBytes [8]byte
+	_, _ = cryptorand.Read(seedBytes[:])
+	seed := binary.LittleEndian.Uint64(seedBytes[:])
+	if seed == 0 {
+		seed = uint64(time.Now().UnixNano()) | 1
 	}
-
-	return &weightedStrategy{weights: copied}
+	r := &fastRand{}
+	r.state.Store(seed)
+	return r
 }
 
-// Name returns the built-in strategy identifier.
-func (s *weightedStrategy) Name() string {
-	return "weighted"
+// next advances the xorshift64* state and returns a pseudo-random value.
+func (r *fastRand) next() uint64 {
+	for {
+		old := r.state.Load()
+		x := old
+		x ^= x >> 12
+		x ^= x << 25
+		x ^= x >> 27
+		if r.state.CompareAndSwap(old, x) {
+			return x * 2685821657736338717
+		}
+	}
 }
 
-// Select chooses a provider according to configured or registered weights.
-func (s *weightedStrategy) Select(
-	_ context.Context,
-	candidates []ProviderState,
-) (ProviderState, error) {
+type randomStrategy struct{ random *fastRand }
+
+// Random selects an eligible provider uniformly at random.
+func Random() RoutingStrategy { return &randomStrategy{random: newFastRand()} }
+
+// Select returns a uniformly selected candidate index.
+func (s *randomStrategy) Select(_ context.Context, _ Request, candidates []Candidate) (int, error) {
 	if len(candidates) == 0 {
-		return ProviderState{}, errors.New("gateway: weighted routing: no candidates")
+		return -1, errors.New("gateway: random routing received no candidates")
 	}
+	return int(s.random.next() % uint64(len(candidates))), nil
+}
 
-	total := 0
-	weights := make([]int, len(candidates))
-	for index, candidate := range candidates {
-		weight := s.weights[candidate.Name]
-		if weight <= 0 {
-			weight = candidate.Weight
-		}
-		if weight <= 0 {
-			weight = 1
-		}
-		weights[index] = weight
-		total += weight
+type weightedStrategy struct{ random *fastRand }
+
+// Weighted selects a provider in proportion to Candidate.Weight.
+func Weighted() RoutingStrategy { return &weightedStrategy{random: newFastRand()} }
+
+// Select returns a weighted-random candidate index.
+func (s *weightedStrategy) Select(_ context.Context, _ Request, candidates []Candidate) (int, error) {
+	if len(candidates) == 0 {
+		return -1, errors.New("gateway: weighted routing received no candidates")
 	}
-
-	target := randomIntn(total)
-
-	for index, weight := range weights {
-		if target < weight {
-			return candidates[index], nil
-		}
-		target -= weight
+	var total uint64
+	for _, candidate := range candidates {
+		total += uint64(candidate.weight)
 	}
+	if total == 0 {
+		return int(s.random.next() % uint64(len(candidates))), nil
+	}
+	pick := s.random.next() % total
+	var running uint64
+	for i, candidate := range candidates {
+		running += uint64(candidate.weight)
+		if pick < running {
+			return i, nil
+		}
+	}
+	return len(candidates) - 1, nil
+}
 
-	return candidates[len(candidates)-1], nil
+type leastStrategy struct{ scorer Scorer }
+
+// Least selects the candidate with the smallest scorer value.
+func Least(scorer Scorer) RoutingStrategy {
+	if scorer == nil {
+		scorer = ByInFlight()
+	}
+	return &leastStrategy{scorer: scorer}
+}
+
+// Select returns the lowest-scoring candidate index in a single O(n) scan.
+func (s *leastStrategy) Select(_ context.Context, request Request, candidates []Candidate) (int, error) {
+	if len(candidates) == 0 {
+		return -1, errors.New("gateway: least routing received no candidates")
+	}
+	bestIndex := 0
+	bestScore := s.scorer.Score(request, candidates[0])
+	for i := 1; i < len(candidates); i++ {
+		score := s.scorer.Score(request, candidates[i])
+		if score < bestScore {
+			bestIndex = i
+			bestScore = score
+		}
+	}
+	return bestIndex, nil
 }
 
 type powerOfTwoStrategy struct {
-	scorer CandidateScorer
+	scorer Scorer
+	random *fastRand
 }
 
-// PowerOfTwo creates a strategy that samples two candidates and chooses the better score.
-func PowerOfTwo(scorer CandidateScorer) RoutingStrategy {
+// PowerOfTwo samples two candidates and selects the lower-scoring one.
+func PowerOfTwo(scorer Scorer) RoutingStrategy {
 	if scorer == nil {
-		scorer = ByObservedLatency()
+		scorer = ByInFlight()
 	}
-
-	return &powerOfTwoStrategy{scorer: scorer}
+	return &powerOfTwoStrategy{scorer: scorer, random: newFastRand()}
 }
 
-// Name returns the built-in strategy identifier.
-func (s *powerOfTwoStrategy) Name() string {
-	return "power_of_two"
-}
-
-// Select samples up to two candidates and returns the lower-scored provider.
-func (s *powerOfTwoStrategy) Select(
-	_ context.Context,
-	candidates []ProviderState,
-) (ProviderState, error) {
+// Select returns the better of two randomly sampled candidates.
+func (s *powerOfTwoStrategy) Select(_ context.Context, request Request, candidates []Candidate) (int, error) {
 	if len(candidates) == 0 {
-		return ProviderState{}, errors.New("gateway: power-of-two routing: no candidates")
+		return -1, errors.New("gateway: power-of-two routing received no candidates")
 	}
 	if len(candidates) == 1 {
-		return candidates[0], nil
+		return 0, nil
 	}
-
-	firstIndex := randomIntn(len(candidates))
-	secondIndex := randomIntn(len(candidates) - 1)
-	if secondIndex >= firstIndex {
-		secondIndex++
+	first := int(s.random.next() % uint64(len(candidates)))
+	second := int(s.random.next() % uint64(len(candidates)-1))
+	if second >= first {
+		second++
 	}
-
-	first := candidates[firstIndex]
-	second := candidates[secondIndex]
-	if s.scorer.Score(first) <= s.scorer.Score(second) {
-		return first, nil
+	if s.scorer.Score(request, candidates[second]) < s.scorer.Score(request, candidates[first]) {
+		return second, nil
 	}
-
-	return second, nil
+	return first, nil
 }
 
-type lowestCostStrategy struct{}
+type stickyStrategy struct{}
 
-// LowestCost creates a strategy that selects the least expensive provider.
-func LowestCost() RoutingStrategy {
-	return lowestCostStrategy{}
-}
+// Sticky uses rendezvous hashing over Request.Key and provider IDs for affinity.
+func Sticky() RoutingStrategy { return stickyStrategy{} }
 
-// Name returns the built-in strategy identifier.
-func (lowestCostStrategy) Name() string {
-	return "lowest_cost"
-}
-
-// Select chooses the candidate with the lowest configured cost.
-func (lowestCostStrategy) Select(
-	_ context.Context,
-	candidates []ProviderState,
-) (ProviderState, error) {
+// Select returns the highest rendezvous-hash candidate for the request key.
+func (stickyStrategy) Select(_ context.Context, request Request, candidates []Candidate) (int, error) {
 	if len(candidates) == 0 {
-		return ProviderState{}, errors.New("gateway: lowest-cost routing: no candidates")
+		return -1, errors.New("gateway: sticky routing received no candidates")
 	}
-
-	selected := candidates[0]
-	for _, candidate := range candidates[1:] {
-		if candidate.Cost < selected.Cost {
-			selected = candidate
+	if request.key == "" {
+		return 0, nil
+	}
+	bestIndex := 0
+	bestHash := rendezvousHash(request.key, candidates[0].id)
+	for i := 1; i < len(candidates); i++ {
+		hash := rendezvousHash(request.key, candidates[i].id)
+		if hash > bestHash {
+			bestIndex = i
+			bestHash = hash
 		}
 	}
-
-	return selected, nil
+	return bestIndex, nil
 }
 
-// ByObservedLatency creates a scorer that prefers lower observed latency.
-func ByObservedLatency() CandidateScorer {
-	return candidateScoreFunc(func(candidate ProviderState) float64 {
-		if candidate.ObservedLatency <= 0 {
-			return float64(time.Second)
-		}
-		return float64(candidate.ObservedLatency)
+// rendezvousHash computes a stable hash for an affinity key and provider ID.
+func rendezvousHash(key string, id ProviderID) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(key))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(id))
+	return h.Sum64()
+}
+
+// ByObservedLatency scores lower observed latency as better.
+func ByObservedLatency() Scorer {
+	return ScoreFunc(func(_ Request, candidate Candidate) float64 {
+		return float64(candidate.observedLatency)
 	})
 }
 
-// ByCost creates a scorer that prefers lower configured cost.
-func ByCost() CandidateScorer {
-	return candidateScoreFunc(func(candidate ProviderState) float64 {
-		return candidate.Cost
+// ByInFlight scores fewer concurrent provider calls as better.
+func ByInFlight() Scorer {
+	return ScoreFunc(func(_ Request, candidate Candidate) float64 {
+		return float64(candidate.inFlight)
 	})
 }
+
+// ByCost scores lower configured cost as better.
+func ByCost() Scorer {
+	return ScoreFunc(func(_ Request, candidate Candidate) float64 {
+		return candidate.cost
+	})
+}
+
+// ByFailureRate scores lower observed local failure ratio as better.
+func ByFailureRate() Scorer {
+	return ScoreFunc(func(_ Request, candidate Candidate) float64 {
+		return candidate.FailureRate()
+	})
+}
+
+// LowestLatency selects the provider with the lowest observed latency.
+func LowestLatency() RoutingStrategy { return Least(ByObservedLatency()) }
+
+// LeastBusy selects the provider with the fewest in-flight requests.
+func LeastBusy() RoutingStrategy { return Least(ByInFlight()) }
+
+// LowestCost selects the provider with the lowest configured cost.
+func LowestCost() RoutingStrategy { return Least(ByCost()) }

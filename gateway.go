@@ -2,484 +2,509 @@ package gateway
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 )
 
-// Gateway routes standard requests through registered providers.
-type Gateway[RequestPayload any, ResponsePayload any] struct {
-	providers      map[string]*providerEntry[RequestPayload, ResponsePayload]
-	providerOrder  []string
+// Gateway routes opaque requests across immutable provider registrations.
+//
+// Gateway is safe for concurrent use after construction.
+type Gateway struct {
+	providers      []providerEntry
+	providerByID   map[ProviderID]int
+	operationIndex map[Operation][]int
+	wildcard       []int
 	routing        RoutingStrategy
-	fallback       FallbackPolicy
-	retry          Retry
-	requestTimeout time.Duration
-	logger         *slog.Logger
+	failure        FailurePolicy
+	timeout        time.Duration
+	maxAttempts    int
+	observer       Observer
+	candidatePool  sync.Pool
+	excludedPool   sync.Pool
 }
 
-type providerEntry[RequestPayload any, ResponsePayload any] struct {
-	provider     Provider[RequestPayload, ResponsePayload]
-	settings     providerSettings
-	latencyNanos atomic.Int64
+type candidateBuffer struct {
+	items []Candidate
 }
 
-// New constructs a ready-to-use Gateway from providers and built-in policies.
-func New[RequestPayload any, ResponsePayload any](
-	options ...Option,
-) (*Gateway[RequestPayload, ResponsePayload], error) {
-	config := gatewayConfig{
-		routing:        Priority(),
-		retry:          Retry{MaxAttempts: 1},
-		requestTimeout: 30 * time.Second,
-		logger:         slog.Default(),
+type excludedBuffer struct {
+	items []bool
+}
+
+type providerEntry struct {
+	id          ProviderID
+	provider    Provider
+	operations  map[Operation]struct{}
+	filters     []Filter
+	priority    int
+	weight      uint32
+	cost        float64
+	maxInFlight int64
+	cooldown    CooldownConfig
+	runtime     providerRuntime
+}
+
+type providerRuntime struct {
+	inFlight              atomic.Int64
+	latencyNanos          atomic.Int64
+	total                 atomic.Uint64
+	failures              atomic.Uint64
+	consecutiveFailures   atomic.Int64
+	cooldownUntilUnixNano atomic.Int64
+}
+
+// ProviderStats is a point-in-time snapshot of one provider's local runtime state.
+type ProviderStats struct {
+	Provider        ProviderID
+	InFlight        int64
+	ObservedLatency time.Duration
+	Total           uint64
+	Failures        uint64
+	CooldownUntil   time.Time
+}
+
+// New constructs an immutable, concurrency-safe Gateway.
+func New(options ...Option) (*Gateway, error) {
+	cfg := config{
+		routing: Priority(),
+		failure: StopOnFailure(),
 	}
-
 	for _, option := range options {
 		if option == nil {
 			continue
 		}
-		if err := option.apply(&config); err != nil {
+		if err := option(&cfg); err != nil {
 			return nil, err
 		}
 	}
-
-	gateway := &Gateway[RequestPayload, ResponsePayload]{
-		providers:      make(map[string]*providerEntry[RequestPayload, ResponsePayload]),
-		routing:        config.routing,
-		fallback:       config.fallback,
-		retry:          config.retry,
-		requestTimeout: config.requestTimeout,
-		logger:         config.logger,
-	}
-
-	for _, rawRegistration := range config.providers {
-		registration, ok := rawRegistration.(ProviderRegistration[RequestPayload, ResponsePayload])
-		if !ok {
-			return nil, errors.New(
-				"gateway: provider registration uses request or response types that do not match the gateway",
-			)
-		}
-
-		if registration.provider == nil {
-			return nil, errors.New("gateway: provider cannot be nil")
-		}
-
-		name := registration.provider.Name()
-		if name == "" {
-			return nil, errors.New("gateway: provider name cannot be empty")
-		}
-		if _, exists := gateway.providers[name]; exists {
-			return nil, fmt.Errorf("gateway: duplicate provider name %q", name)
-		}
-
-		gateway.providers[name] = &providerEntry[RequestPayload, ResponsePayload]{
-			provider: registration.provider,
-			settings: registration.settings,
-		}
-		gateway.providerOrder = append(gateway.providerOrder, name)
-	}
-
-	if len(gateway.providers) == 0 {
+	if len(cfg.providers) == 0 {
 		return nil, errors.New("gateway: at least one provider is required")
 	}
 
-	return gateway, nil
-}
-
-// HandleRequest routes one standard request and returns one standard response.
-func (g *Gateway[RequestPayload, ResponsePayload]) HandleRequest(
-	ctx context.Context,
-	request Request[RequestPayload],
-) (Result[ResponsePayload], error) {
-	var zero Result[ResponsePayload]
-	if g == nil {
-		return zero, &GatewayError{
-			Kind:    ErrorInternal,
-			Code:    CodeNilGateway,
-			Message: "gateway is nil",
-		}
+	g := &Gateway{
+		providers:      make([]providerEntry, 0, len(cfg.providers)),
+		providerByID:   make(map[ProviderID]int, len(cfg.providers)),
+		operationIndex: make(map[Operation][]int),
+		routing:        cfg.routing,
+		failure:        cfg.failure,
+		timeout:        cfg.timeout,
+		maxAttempts:    cfg.maxAttempts,
+		observer:       cfg.observer,
 	}
 
-	if err := g.validateRequest(request); err != nil {
-		return zero, err
-	}
-
-	if request.ID == "" {
-		request.ID = newRequestID()
-	}
-
-	requestContext, cancel := context.WithTimeout(ctx, g.requestTimeout)
-	defer cancel()
-
-	startedAt := time.Now()
-	attempts := make([]Attempt, 0, len(g.providers))
-	usedProviders := make(map[string]struct{}, len(g.providers))
-	firstSelection := true
-
-	g.logger.Log(
-		requestContext,
-		slog.LevelInfo,
-		"gateway request started",
-		"request_id", request.ID,
-		"operation", request.Operation,
-	)
-
-	for {
-		entry, err := g.selectProvider(
-			requestContext,
-			request,
-			usedProviders,
-			firstSelection,
-		)
-		firstSelection = false
-		if err != nil {
-			gatewayError := normalizeError(
-				requestContext,
-				err,
-				"",
-				request.Operation,
-				len(attempts)+1,
-			)
-			return zero, gatewayError
+	for _, registration := range cfg.providers {
+		if registration.optionErr != nil {
+			return nil, registration.optionErr
 		}
-
-		usedProviders[entry.provider.Name()] = struct{}{}
-		response, providerAttempts, providerError := g.executeProvider(
-			requestContext,
-			request,
-			entry,
-			len(attempts),
-		)
-		attempts = append(attempts, providerAttempts...)
-
-		if providerError == nil {
-			g.logger.Log(
-				requestContext,
-				slog.LevelInfo,
-				"gateway request completed",
-				"request_id", request.ID,
-				"operation", request.Operation,
-				"provider", entry.provider.Name(),
-				"attempts", len(attempts),
-				"duration", time.Since(startedAt),
-			)
-			return Result[ResponsePayload]{
-				RequestID: request.ID,
-				Provider:  entry.provider.Name(),
-				Payload:   response,
-				Attempts:  attempts,
-			}, nil
+		if registration.id == "" {
+			return nil, errors.New("gateway: provider ID cannot be empty")
 		}
-
-		if g.fallback == nil || !g.fallback.Allows(providerError) {
-			g.logTerminalError(requestContext, request, providerError, len(attempts))
-			return zero, providerError
+		if registration.provider == nil {
+			return nil, fmt.Errorf("gateway: provider %q cannot be nil", registration.id)
 		}
-
-		if !g.hasEligibleProvider(request, usedProviders) {
-			g.logTerminalError(requestContext, request, providerError, len(attempts))
-			return zero, providerError
+		if _, exists := g.providerByID[registration.id]; exists {
+			return nil, fmt.Errorf("gateway: duplicate provider ID %q", registration.id)
 		}
-
-		g.logger.Log(
-			requestContext,
-			slog.LevelWarn,
-			"gateway fallback selected",
-			"request_id", request.ID,
-			"operation", request.Operation,
-			"failed_provider", providerError.Provider,
-			"error_kind", providerError.Kind,
-		)
-	}
-}
-
-// validateRequest verifies required request fields and optional provider hints.
-func (g *Gateway[RequestPayload, ResponsePayload]) validateRequest(
-	request Request[RequestPayload],
-) error {
-	if request.Operation == "" {
-		return &GatewayError{
-			Kind:    ErrorValidation,
-			Code:    CodeOperationRequired,
-			Message: "request operation is required",
+		index := len(g.providers)
+		g.providerByID[registration.id] = index
+		var operationSet map[Operation]struct{}
+		if len(registration.operations) > 0 {
+			operationSet = make(map[Operation]struct{}, len(registration.operations))
 		}
-	}
-
-	if request.ProviderHint != "" {
-		entry, exists := g.providers[request.ProviderHint]
-		if !exists {
-			return &GatewayError{
-				Kind:    ErrorValidation,
-				Code:    CodeProviderHintUnknown,
-				Message: fmt.Sprintf("provider hint %q is not registered", request.ProviderHint),
-			}
-		}
-		if !entry.provider.Supports(request.Operation) {
-			return &GatewayError{
-				Kind: ErrorValidation,
-				Code: CodeProviderHintUnsupported,
-				Message: fmt.Sprintf(
-					"provider %q does not support operation %q",
-					request.ProviderHint,
-					request.Operation,
-				),
-			}
-		}
-	}
-
-	if !g.hasEligibleProvider(request, nil) {
-		return &GatewayError{
-			Kind:    ErrorValidation,
-			Code:    CodeOperationUnsupported,
-			Message: fmt.Sprintf("no provider supports operation %q", request.Operation),
-		}
-	}
-
-	return nil
-}
-
-// selectProvider converts eligible registrations into routing candidates.
-func (g *Gateway[RequestPayload, ResponsePayload]) selectProvider(
-	ctx context.Context,
-	request Request[RequestPayload],
-	usedProviders map[string]struct{},
-	firstSelection bool,
-) (*providerEntry[RequestPayload, ResponsePayload], error) {
-	if firstSelection && request.ProviderHint != "" {
-		return g.providers[request.ProviderHint], nil
-	}
-
-	candidates := make([]ProviderState, 0, len(g.providers))
-	for _, name := range g.providerOrder {
-		if _, used := usedProviders[name]; used {
-			continue
-		}
-
-		entry := g.providers[name]
-		if !entry.provider.Supports(request.Operation) {
-			continue
-		}
-
-		candidates = append(candidates, ProviderState{
-			Name:            name,
-			Priority:        entry.settings.priority,
-			Weight:          entry.settings.weight,
-			Cost:            entry.settings.cost,
-			ObservedLatency: time.Duration(entry.latencyNanos.Load()),
-			Healthy:         true,
-			Metadata:        cloneStringMap(entry.settings.metadata),
+		g.providers = append(g.providers, providerEntry{
+			id:          registration.id,
+			provider:    registration.provider,
+			operations:  operationSet,
+			filters:     append([]Filter(nil), registration.filters...),
+			priority:    registration.priority,
+			weight:      registration.weight,
+			cost:        registration.cost,
+			maxInFlight: registration.maxInFlight,
+			cooldown:    registration.cooldown,
 		})
-	}
 
-	selected, err := g.routing.Select(ctx, candidates)
-	if err != nil {
-		return nil, &GatewayError{
-			Kind:      ErrorUnavailable,
-			Code:      CodeRoutingFailed,
-			Message:   err.Error(),
-			Operation: request.Operation,
-			Cause:     err,
+		if len(registration.operations) == 0 {
+			g.wildcard = append(g.wildcard, index)
+			continue
+		}
+		seen := make(map[Operation]struct{}, len(registration.operations))
+		for _, operation := range registration.operations {
+			if operation == "" {
+				return nil, fmt.Errorf("gateway: provider %q has an empty operation", registration.id)
+			}
+			if _, exists := seen[operation]; exists {
+				continue
+			}
+			seen[operation] = struct{}{}
+			g.providers[index].operations[operation] = struct{}{}
+			g.operationIndex[operation] = append(g.operationIndex[operation], index)
 		}
 	}
 
-	entry, exists := g.providers[selected.Name]
-	if !exists {
-		return nil, &GatewayError{
-			Kind:      ErrorInternal,
-			Code:      CodeRoutingUnknownProvider,
-			Message:   fmt.Sprintf("routing strategy selected unknown provider %q", selected.Name),
-			Operation: request.Operation,
-		}
-	}
-	_, used := usedProviders[selected.Name]
-	if used || !entry.provider.Supports(request.Operation) {
-		return nil, &GatewayError{
-			Kind:      ErrorInternal,
-			Code:      CodeRoutingIneligibleProvider,
-			Message:   fmt.Sprintf("routing strategy selected ineligible provider %q", selected.Name),
-			Operation: request.Operation,
+	if g.maxAttempts == 0 {
+		g.maxAttempts = len(g.providers) * 2
+		if g.maxAttempts < 1 {
+			g.maxAttempts = 1
 		}
 	}
 
-	return entry, nil
+	providerCount := len(g.providers)
+	g.candidatePool.New = func() any {
+		return &candidateBuffer{items: make([]Candidate, 0, providerCount)}
+	}
+	g.excludedPool.New = func() any {
+		return &excludedBuffer{items: make([]bool, providerCount)}
+	}
+	return g, nil
 }
 
-// executeProvider invokes one provider with configured same-provider retries.
-func (g *Gateway[RequestPayload, ResponsePayload]) executeProvider(
-	ctx context.Context,
-	request Request[RequestPayload],
-	entry *providerEntry[RequestPayload, ResponsePayload],
-	attemptOffset int,
-) (ResponsePayload, []Attempt, *GatewayError) {
-	var zero ResponsePayload
-	maxAttempts := max(g.retry.MaxAttempts, 1)
+// HandleRequest selects providers, executes the configured failure policy, and returns the first success.
+func (g *Gateway) HandleRequest(ctx context.Context, request Request) (Result, error) {
+	if g == nil {
+		return Result{}, &Error{Code: CodeInvalidRequest, Operation: request.operation, Cause: errors.New("nil gateway")}
+	}
+	if ctx == nil {
+		return Result{}, &Error{Code: CodeInvalidRequest, Operation: request.operation, Cause: errors.New("nil context")}
+	}
+	if request.operation == "" {
+		return Result{}, &Error{Code: CodeInvalidRequest, Cause: errors.New("operation is required")}
+	}
+	if request.providerHint != "" {
+		if _, exists := g.providerByID[request.providerHint]; !exists {
+			return Result{}, &Error{Code: CodeInvalidRequest, Operation: request.operation, Cause: fmt.Errorf("unknown provider hint %q", request.providerHint)}
+		}
+	}
 
-	attempts := make([]Attempt, 0, maxAttempts)
-	for localAttempt := 1; localAttempt <= maxAttempts; localAttempt++ {
+	ctx, cancel := g.withTimeout(ctx)
+	if cancel != nil {
+		defer cancel()
+	}
+	started := time.Now()
+	g.emit(ctx, Event{Type: EventRequestStarted, RequestID: request.id, Operation: request.operation})
+
+	excludedBuffer := g.excludedPool.Get().(*excludedBuffer)
+	excluded := excludedBuffer.items
+	if len(excluded) != len(g.providers) {
+		excluded = make([]bool, len(g.providers))
+		excludedBuffer.items = excluded
+	}
+	defer func() {
+		clear(excluded)
+		g.excludedPool.Put(excludedBuffer)
+	}()
+
+	attempt := 0
+	currentProvider := -1
+	providerAttempt := 0
+	firstSelection := true
+	var lastErr error
+
+	for attempt < g.maxAttempts {
 		if err := ctx.Err(); err != nil {
-			gatewayError := contextGatewayError(
-				err,
-				entry.provider.Name(),
-				request.Operation,
-				attemptOffset+localAttempt,
-			)
-			return zero, attempts, gatewayError
+			return Result{}, g.contextError(request.operation, currentProvider, attempt, err)
 		}
 
-		startedAt := time.Now()
-		response, err := entry.provider.Execute(ctx, request)
-		duration := time.Since(startedAt)
-		entry.observeLatency(duration)
-
-		attempt := Attempt{
-			Provider:  entry.provider.Name(),
-			Number:    attemptOffset + localAttempt,
-			StartedAt: startedAt,
-			Duration:  duration,
-			Success:   err == nil,
+		if currentProvider < 0 {
+			selected, err := g.selectProvider(ctx, request, excluded, firstSelection)
+			firstSelection = false
+			if err != nil {
+				if lastErr != nil {
+					return Result{}, &Error{Code: CodeAttemptsExhausted, Operation: request.operation, Attempt: attempt, Cause: lastErr}
+				}
+				return Result{}, err
+			}
+			currentProvider = selected
+			providerAttempt = 0
 		}
 
-		if err == nil {
-			attempts = append(attempts, attempt)
-			return response, attempts, nil
+		entry := &g.providers[currentProvider]
+		if !entry.tryAcquire() {
+			excluded[currentProvider] = true
+			currentProvider = -1
+			continue
 		}
 
-		gatewayError := normalizeError(
-			ctx,
-			err,
-			entry.provider.Name(),
-			request.Operation,
-			attemptOffset+localAttempt,
-		)
-		attempt.ErrorKind = gatewayError.Kind
-		attempt.ErrorCode = gatewayError.Code
-		attempts = append(attempts, attempt)
+		attempt++
+		providerAttempt++
+		g.emit(ctx, Event{Type: EventProviderSelected, RequestID: request.id, Operation: request.operation, Provider: entry.id, Attempt: attempt})
+		attemptStarted := time.Now()
+		value, providerErr := entry.provider.Handle(ctx, request)
+		duration := time.Since(attemptStarted)
+		entry.release()
+		entry.observe(duration, providerErr)
+		g.emit(ctx, Event{Type: EventAttemptFinished, RequestID: request.id, Operation: request.operation, Provider: entry.id, Attempt: attempt, Duration: duration, Error: providerErr})
 
-		g.logger.Log(
-			ctx,
-			slog.LevelWarn,
-			"gateway provider attempt failed",
-			"request_id", request.ID,
-			"operation", request.Operation,
-			"provider", entry.provider.Name(),
-			"attempt", attempt.Number,
-			"error_kind", gatewayError.Kind,
-			"error_code", gatewayError.Code,
-		)
-
-		if !gatewayError.Retryable || localAttempt == maxAttempts {
-			return zero, attempts, gatewayError
+		if providerErr == nil {
+			g.emit(ctx, Event{Type: EventRequestFinished, RequestID: request.id, Operation: request.operation, Provider: entry.id, Attempt: attempt, Duration: time.Since(started)})
+			return Result{provider: entry.id, value: value}, nil
+		}
+		lastErr = providerErr
+		if contextErr := ctx.Err(); contextErr != nil {
+			return Result{}, g.contextError(request.operation, currentProvider, attempt, contextErr)
 		}
 
-		if err := waitForBackoff(ctx, g.retry.Backoff, localAttempt); err != nil {
-			return zero, attempts, contextGatewayError(
-				err,
-				entry.provider.Name(),
-				request.Operation,
-				attemptOffset+localAttempt,
-			)
+		decision := g.failure.Decide(ctx, Failure{
+			Request:         request,
+			Provider:        entry.id,
+			Error:           providerErr,
+			Attempt:         attempt,
+			ProviderAttempt: providerAttempt,
+		})
+		switch decision.Action {
+		case Stop:
+			return Result{}, &Error{Code: CodeProviderFailed, Operation: request.operation, Provider: entry.id, Attempt: attempt, Cause: providerErr}
+		case RetryProvider:
+			if err := wait(ctx, decision.Delay); err != nil {
+				return Result{}, g.contextError(request.operation, currentProvider, attempt, err)
+			}
+		case NextProvider:
+			excluded[currentProvider] = true
+			currentProvider = -1
+			providerAttempt = 0
+			if err := wait(ctx, decision.Delay); err != nil {
+				return Result{}, g.contextError(request.operation, -1, attempt, err)
+			}
+		default:
+			return Result{}, &Error{Code: CodeProviderFailed, Operation: request.operation, Provider: entry.id, Attempt: attempt, Cause: providerErr}
 		}
 	}
 
-	return zero, attempts, &GatewayError{
-		Kind:      ErrorInternal,
-		Code:      CodeRetryLoopExhausted,
-		Message:   "provider retry loop ended unexpectedly",
-		Provider:  entry.provider.Name(),
-		Operation: request.Operation,
+	return Result{}, &Error{Code: CodeAttemptsExhausted, Operation: request.operation, Attempt: attempt, Cause: lastErr}
+}
+
+// Stats returns a point-in-time copy of local provider runtime statistics.
+func (g *Gateway) Stats() []ProviderStats {
+	if g == nil {
+		return nil
+	}
+	stats := make([]ProviderStats, len(g.providers))
+	for i := range g.providers {
+		entry := &g.providers[i]
+		unixNano := entry.runtime.cooldownUntilUnixNano.Load()
+		var cooldownUntil time.Time
+		if unixNano > 0 {
+			cooldownUntil = time.Unix(0, unixNano)
+		}
+		stats[i] = ProviderStats{
+			Provider:        entry.id,
+			InFlight:        entry.runtime.inFlight.Load(),
+			ObservedLatency: time.Duration(entry.runtime.latencyNanos.Load()),
+			Total:           entry.runtime.total.Load(),
+			Failures:        entry.runtime.failures.Load(),
+			CooldownUntil:   cooldownUntil,
+		}
+	}
+	return stats
+}
+
+// selectProvider builds the current eligible set and asks the routing strategy for one index.
+func (g *Gateway) selectProvider(ctx context.Context, request Request, excluded []bool, firstSelection bool) (int, error) {
+	if firstSelection && request.providerHint != "" {
+		index := g.providerByID[request.providerHint]
+		candidate, allowed, err := g.candidate(ctx, request, index, excluded)
+		if err != nil {
+			return -1, err
+		}
+		if allowed {
+			_ = candidate
+			return index, nil
+		}
+	}
+
+	candidateBuffer := g.candidatePool.Get().(*candidateBuffer)
+	candidates := candidateBuffer.items[:0]
+	defer func() {
+		clear(candidates)
+		candidateBuffer.items = candidates[:0]
+		g.candidatePool.Put(candidateBuffer)
+	}()
+
+	for _, index := range g.operationIndex[request.operation] {
+		candidate, allowed, err := g.candidate(ctx, request, index, excluded)
+		if err != nil {
+			return -1, err
+		}
+		if allowed {
+			candidates = append(candidates, candidate)
+		}
+	}
+	for _, index := range g.wildcard {
+		candidate, allowed, err := g.candidate(ctx, request, index, excluded)
+		if err != nil {
+			return -1, err
+		}
+		if allowed {
+			candidates = append(candidates, candidate)
+		}
+	}
+	if len(candidates) == 0 {
+		return -1, &Error{Code: CodeNoProvider, Operation: request.operation, Cause: errors.New("no eligible provider")}
+	}
+
+	selected, err := g.routing.Select(ctx, request, candidates)
+	if err != nil {
+		return -1, &Error{Code: CodeRoutingFailed, Operation: request.operation, Cause: err}
+	}
+	if selected < 0 || selected >= len(candidates) {
+		return -1, &Error{Code: CodeRoutingFailed, Operation: request.operation, Cause: fmt.Errorf("routing strategy returned invalid candidate index %d", selected)}
+	}
+	return candidates[selected].index, nil
+}
+
+// candidate snapshots provider runtime state and evaluates dynamic filters.
+func (g *Gateway) candidate(ctx context.Context, request Request, index int, excluded []bool) (Candidate, bool, error) {
+	if index < 0 || index >= len(g.providers) || excluded[index] {
+		return Candidate{}, false, nil
+	}
+	entry := &g.providers[index]
+	if entry.operations != nil {
+		if _, supported := entry.operations[request.operation]; !supported {
+			return Candidate{}, false, nil
+		}
+	}
+	now := time.Now().UnixNano()
+	if until := entry.runtime.cooldownUntilUnixNano.Load(); until > now {
+		return Candidate{}, false, nil
+	}
+	inFlight := entry.runtime.inFlight.Load()
+	if entry.maxInFlight > 0 && inFlight >= entry.maxInFlight {
+		return Candidate{}, false, nil
+	}
+	candidate := Candidate{
+		index:           index,
+		id:              entry.id,
+		priority:        entry.priority,
+		weight:          entry.weight,
+		cost:            entry.cost,
+		observedLatency: time.Duration(entry.runtime.latencyNanos.Load()),
+		inFlight:        inFlight,
+		total:           entry.runtime.total.Load(),
+		failures:        entry.runtime.failures.Load(),
+	}
+	for _, filter := range entry.filters {
+		allowed, err := filter.Allow(ctx, request, candidate)
+		if err != nil {
+			return Candidate{}, false, &Error{Code: CodeRoutingFailed, Operation: request.operation, Provider: entry.id, Cause: fmt.Errorf("provider filter: %w", err)}
+		}
+		if !allowed {
+			return Candidate{}, false, nil
+		}
+	}
+	return candidate, true, nil
+}
+
+// tryAcquire atomically reserves local provider concurrency capacity.
+func (e *providerEntry) tryAcquire() bool {
+	if e.maxInFlight <= 0 {
+		e.runtime.inFlight.Add(1)
+		return true
+	}
+	for {
+		current := e.runtime.inFlight.Load()
+		if current >= e.maxInFlight {
+			return false
+		}
+		if e.runtime.inFlight.CompareAndSwap(current, current+1) {
+			return true
+		}
 	}
 }
 
-// observeLatency updates the provider's exponentially weighted latency estimate.
-func (e *providerEntry[RequestPayload, ResponsePayload]) observeLatency(sample time.Duration) {
+// release returns one local provider concurrency slot.
+func (e *providerEntry) release() { e.runtime.inFlight.Add(-1) }
+
+// observe updates lock-free latency, counters, and optional cooldown state.
+func (e *providerEntry) observe(duration time.Duration, err error) {
+	e.runtime.total.Add(1)
+	e.observeLatency(duration)
+	if err == nil {
+		e.runtime.consecutiveFailures.Store(0)
+		return
+	}
+	e.runtime.failures.Add(1)
+	if e.cooldown.Failures <= 0 || e.cooldown.Duration <= 0 {
+		return
+	}
+	if e.cooldown.When != nil && !e.cooldown.When(err) {
+		e.runtime.consecutiveFailures.Store(0)
+		return
+	}
+	failures := e.runtime.consecutiveFailures.Add(1)
+	if failures < int64(e.cooldown.Failures) {
+		return
+	}
+	e.runtime.consecutiveFailures.Store(0)
+	until := time.Now().Add(e.cooldown.Duration).UnixNano()
 	for {
-		current := e.latencyNanos.Load()
-		next := sample.Nanoseconds()
-		if current > 0 {
-			next = (current*7 + sample.Nanoseconds()*3) / 10
-		}
-		if e.latencyNanos.CompareAndSwap(current, next) {
+		current := e.runtime.cooldownUntilUnixNano.Load()
+		if current >= until || e.runtime.cooldownUntilUnixNano.CompareAndSwap(current, until) {
 			return
 		}
 	}
 }
 
-// hasEligibleProvider reports whether an unused provider supports the operation.
-func (g *Gateway[RequestPayload, ResponsePayload]) hasEligibleProvider(
-	request Request[RequestPayload],
-	usedProviders map[string]struct{},
-) bool {
-	for name, entry := range g.providers {
-		if usedProviders != nil {
-			if _, used := usedProviders[name]; used {
-				continue
-			}
+// observeLatency updates the provider's exponentially weighted latency estimate.
+func (e *providerEntry) observeLatency(sample time.Duration) {
+	sampleNanos := sample.Nanoseconds()
+	for {
+		current := e.runtime.latencyNanos.Load()
+		next := sampleNanos
+		if current > 0 {
+			next = (current*7 + sampleNanos*3) / 10
 		}
-		if entry.provider.Supports(request.Operation) {
-			return true
+		if e.runtime.latencyNanos.CompareAndSwap(current, next) {
+			return
 		}
 	}
-	return false
 }
 
-// logTerminalError records a terminal request failure.
-func (g *Gateway[RequestPayload, ResponsePayload]) logTerminalError(
-	ctx context.Context,
-	request Request[RequestPayload],
-	err *GatewayError,
-	attempts int,
-) {
-	g.logger.Log(
-		ctx,
-		slog.LevelError,
-		"gateway request failed",
-		"request_id", request.ID,
-		"operation", request.Operation,
-		"provider", err.Provider,
-		"attempts", attempts,
-		"error_kind", err.Kind,
-		"error_code", err.Code,
-	)
+// withTimeout applies the configured timeout only when it shortens the caller deadline.
+func (g *Gateway) withTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if g.timeout <= 0 {
+		return ctx, nil
+	}
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= g.timeout {
+		return ctx, nil
+	}
+	return context.WithTimeout(ctx, g.timeout)
 }
 
-// contextGatewayError converts context termination into a normalized error.
-func contextGatewayError(
-	err error,
-	provider string,
-	operation Operation,
-	attempt int,
-) *GatewayError {
-	kind := ErrorCanceled
-	code := CodeRequestCanceled
-	message := "request was canceled"
+// contextError converts context termination into a gateway Error.
+func (g *Gateway) contextError(operation Operation, providerIndex int, attempt int, err error) error {
+	code := CodeCanceled
 	if errors.Is(err, context.DeadlineExceeded) {
-		kind = ErrorTimeout
-		code = CodeRequestTimeout
-		message = "gateway request timed out"
+		code = CodeDeadlineExceeded
 	}
-
-	return &GatewayError{
-		Kind:      kind,
-		Code:      code,
-		Message:   message,
-		Provider:  provider,
-		Operation: operation,
-		Attempt:   attempt,
-		Cause:     err,
+	var provider ProviderID
+	if providerIndex >= 0 && providerIndex < len(g.providers) {
+		provider = g.providers[providerIndex].id
 	}
+	return &Error{Code: code, Operation: operation, Provider: provider, Attempt: attempt, Cause: err}
 }
 
-// newRequestID creates a compact random request identifier.
-func newRequestID() string {
-	var value [12]byte
-	if _, err := rand.Read(value[:]); err == nil {
-		return hex.EncodeToString(value[:])
+// emit sends an optional observability event without allowing observer panics to break routing.
+func (g *Gateway) emit(ctx context.Context, event Event) {
+	if g.observer == nil {
+		return
 	}
+	defer func() { _ = recover() }()
+	g.observer.Observe(ctx, event)
+}
 
-	return fmt.Sprintf("gateway-%d", time.Now().UnixNano())
+// wait sleeps for a bounded failure-policy delay while respecting cancellation.
+func wait(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }

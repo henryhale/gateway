@@ -1,68 +1,87 @@
-package gateway_test
+package gateway
 
 import (
 	"context"
 	"testing"
 	"time"
-
-	gw "github.com/henryhale/gateway"
 )
 
-// TestPriorityStrategyUsesConfiguredOrder verifies explicit priority ordering.
-func TestPriorityStrategyUsesConfiguredOrder(t *testing.T) {
-	strategy := gw.Priority("second", "first")
-	selected, err := strategy.Select(context.Background(), []gw.ProviderState{
-		{Name: "first", Priority: 1},
-		{Name: "second", Priority: 2},
+// TestPriority verifies priority routing is a stable O(n) minimum scan.
+func TestPriority(t *testing.T) {
+	strategy := Priority()
+	index, err := strategy.Select(context.Background(), Request{}, []Candidate{
+		{id: "a", priority: 3},
+		{id: "b", priority: 1},
+		{id: "c", priority: 2},
 	})
 	if err != nil {
-		t.Fatalf("select provider: %v", err)
+		t.Fatal(err)
 	}
-	if selected.Name != "second" {
-		t.Fatalf("expected second, got %q", selected.Name)
-	}
-}
-
-// TestRoundRobinStrategyRotates verifies stable provider rotation.
-func TestRoundRobinStrategyRotates(t *testing.T) {
-	strategy := gw.RoundRobin()
-	candidates := []gw.ProviderState{{Name: "b"}, {Name: "a"}}
-
-	first, err := strategy.Select(context.Background(), candidates)
-	if err != nil {
-		t.Fatalf("first selection: %v", err)
-	}
-	second, err := strategy.Select(context.Background(), candidates)
-	if err != nil {
-		t.Fatalf("second selection: %v", err)
-	}
-
-	if first.Name != "a" || second.Name != "b" {
-		t.Fatalf("unexpected rotation: %q then %q", first.Name, second.Name)
+	if index != 1 {
+		t.Fatalf("index = %d, want 1", index)
 	}
 }
 
-// TestLowestCostStrategySelectsCheapest verifies cost routing.
-func TestLowestCostStrategySelectsCheapest(t *testing.T) {
-	strategy := gw.LowestCost()
-	selected, err := strategy.Select(context.Background(), []gw.ProviderState{
-		{Name: "expensive", Cost: 2.0},
-		{Name: "cheap", Cost: 1.0},
+// TestPriorityExplicitOrder verifies explicit provider ordering overrides static priority.
+func TestPriorityExplicitOrder(t *testing.T) {
+	strategy := Priority("c", "a")
+	index, err := strategy.Select(context.Background(), Request{}, []Candidate{
+		{id: "a", priority: 0},
+		{id: "b", priority: -10},
+		{id: "c", priority: 100},
 	})
 	if err != nil {
-		t.Fatalf("select provider: %v", err)
+		t.Fatal(err)
 	}
-	if selected.Name != "cheap" {
-		t.Fatalf("expected cheap provider, got %q", selected.Name)
+	if index != 2 {
+		t.Fatalf("index = %d, want 2", index)
 	}
 }
 
-// TestObservedLatencyScorerPrefersKnownFastProvider verifies latency scoring.
-func TestObservedLatencyScorerPrefersKnownFastProvider(t *testing.T) {
-	scorer := gw.ByObservedLatency()
-	fast := scorer.Score(gw.ProviderState{ObservedLatency: 10 * time.Millisecond})
-	slow := scorer.Score(gw.ProviderState{ObservedLatency: 50 * time.Millisecond})
-	if fast >= slow {
-		t.Fatalf("expected fast score below slow score: %f >= %f", fast, slow)
+// TestLeast verifies generic scorer composition.
+func TestLeast(t *testing.T) {
+	strategy := Least(ByCost())
+	index, err := strategy.Select(context.Background(), Request{}, []Candidate{
+		{id: "a", cost: 4},
+		{id: "b", cost: 1},
+		{id: "c", cost: 2},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if index != 1 {
+		t.Fatalf("index = %d, want 1", index)
+	}
+}
+
+// TestPowerOfTwoSingleCandidate verifies the strategy handles the one-provider case.
+func TestPowerOfTwoSingleCandidate(t *testing.T) {
+	strategy := PowerOfTwo(ByObservedLatency())
+	index, err := strategy.Select(context.Background(), Request{}, []Candidate{{id: "a", observedLatency: time.Millisecond}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if index != 0 {
+		t.Fatalf("index = %d, want 0", index)
+	}
+}
+
+// TestSticky verifies affinity is deterministic for a stable candidate set.
+func TestSticky(t *testing.T) {
+	strategy := Sticky()
+	request := NewRequest("chat", nil, WithKey("session-123"))
+	candidates := []Candidate{{id: "a"}, {id: "b"}, {id: "c"}}
+	first, err := strategy.Select(context.Background(), request, candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 100; i++ {
+		next, err := strategy.Select(context.Background(), request, candidates)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if next != first {
+			t.Fatalf("sticky index changed from %d to %d", first, next)
+		}
 	}
 }
