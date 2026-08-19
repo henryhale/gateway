@@ -1,7 +1,7 @@
-.PHONY: fmt vet test race check
+.PHONY: fmt vet test race bench check
 
 fmt:
-	gofmt -w $$(find . -name '*.go')
+	gofmt -w $$(find . -name '*.go' -type f)
 
 vet:
 	go vet ./...
@@ -12,10 +12,7 @@ test:
 race:
 	go test -race ./...
 
-check: fmt vet race
+bench:
+	go test -run '^$$' -bench . -benchmem ./...
 
-lint:
-	golangci-lint config verify
-	golangci-lint run ./...
-	golangci-lint fmt ./...
-
+check: fmt vet test race
