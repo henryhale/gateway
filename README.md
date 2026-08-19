@@ -26,36 +26,28 @@ Use this package to build gateways for payments, LLMs, notifications, storage, s
 A simple payment gateway can be setup as shown below:
 
 ```go
-paymentGateway, err := gw.New[ChargeRequest, ChargeResponse](
+paymentGateway, err := gw.New(
     gw.WithProviders(
         gw.UseProvider(
+            "fastpay",
             fastPay,
+            gw.WithOperations("payment.charge"),
             gw.WithProviderPriority(1),
             gw.WithProviderWeight(70),
             gw.WithProviderCost(0.029),
         ),
         gw.UseProvider(
+            "safepay",
             safePay,
+            gw.WithOperations("payment.charge"),
             gw.WithProviderPriority(2),
             gw.WithProviderWeight(30),
             gw.WithProviderCost(0.032),
         ),
     ),
     gw.WithRouting(gw.PowerOfTwo(gw.ByObservedLatency())),
-    gw.WithFallback(gw.FallbackOn(
-        gw.ErrorRateLimited,
-        gw.ErrorTimeout,
-        gw.ErrorUnavailable,
-    )),
-    gw.WithRetry(gw.Retry{
-        MaxAttempts: 2,
-        Backoff: gw.ExponentialBackoff{
-            Initial: 100 * time.Millisecond,
-            Maximum: time.Second,
-        },
-    }),
+    gw.WithFailurePolicy(gw.StopOnFailure()),
     gw.WithRequestTimeout(10*time.Second),
-    gw.WithLogger(slog.Default()),
 )
 
 if err != nil {
@@ -66,15 +58,25 @@ if err != nil {
 The application calls one method:
 
 ```go
-result, err := paymentGateway.HandleRequest(ctx, gw.Request[ChargeRequest]{
-    Operation: "payment.charge",
-    Payload:   charge,
-})
+result, err := paymentGateway.HandleRequest(
+    ctx,
+    gw.NewRequest("payment.charge", charge),
+)
+if err != nil {
+    log.Fatal(err)
+}
+
+response, ok := gw.ValueAs[ChargeResponse](result)
+if !ok {
+    log.Fatal("unexpected payment response")
+}
+
+log.Printf("provider=%s response=%+v", result.Provider(), response)
 ```
 
 ## Installation
 
-- Go 1.26.5 or later.
+- Go 1.23 or later.
 - No third-party runtime dependencies.
 
 ```bash
