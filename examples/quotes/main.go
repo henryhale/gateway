@@ -7,15 +7,14 @@ package main
 import (
 	"encoding/json"
 	"log"
-	"log/slog"
 	"net/http"
 	"os"
 	"time"
 
-	"examples/quotes/domain"
-	"examples/quotes/providers"
-
 	gw "github.com/henryhale/gateway"
+	"github.com/henryhale/gateway/examples/quotes/domain"
+	"github.com/henryhale/gateway/examples/quotes/providers"
+	"github.com/henryhale/gateway/httpgw"
 )
 
 func main() {
@@ -50,90 +49,84 @@ func main() {
 
 // newQuoteGateway registers the three quote providers and builds the gateway
 // that fans requests out across them.
-func newQuoteGateway() (*gw.Gateway[domain.QuoteRequest, domain.Quote], error) {
-	zenQuotes := gw.NewHTTPProvider(
-		"zenquotes",
-		gw.HTTPProviderConfig{
-			BaseURL: "https://zenquotes.io",
-			Timeout: 5 * time.Second,
-		},
-		providers.ZenQuotesCodec{},
-	)
+func newQuoteGateway() (*gw.Gateway, error) {
+	client := &http.Client{Timeout: 5 * time.Second}
+	zenQuotes, err := httpgw.NewProvider(client, providers.ZenQuotesCodec{})
+	if err != nil {
+		return nil, err
+	}
+	motivationalSpark, err := httpgw.NewProvider(client, providers.MotivationalSparkCodec{})
+	if err != nil {
+		return nil, err
+	}
+	textIntoImages, err := httpgw.NewProvider(client, providers.TextIntoImagesCodec{})
+	if err != nil {
+		return nil, err
+	}
 
-	motivationalSpark := gw.NewHTTPProvider(
-		"motivational-spark",
-		gw.HTTPProviderConfig{
-			BaseURL: "https://motivational-spark-api.vercel.app",
-			Timeout: 5 * time.Second,
-		},
-		providers.MotivationalSparkCodec{},
-	)
-
-	textIntoImages := gw.NewHTTPProvider(
-		"textintoimages",
-		gw.HTTPProviderConfig{
-			BaseURL: "https://textintoimages.com",
-			Timeout: 5 * time.Second,
-		},
-		providers.TextIntoImagesCodec{},
-	)
-
-	return gw.New[domain.QuoteRequest, domain.Quote](
+	return gw.New(
 		gw.WithProviders(
-			gw.UseProvider(zenQuotes, gw.WithProviderPriority(1)),
-			gw.UseProvider(motivationalSpark, gw.WithProviderPriority(2)),
-			gw.UseProvider(textIntoImages, gw.WithProviderPriority(3)),
+			gw.UseProvider("zenquotes", zenQuotes, gw.WithOperations(domain.OperationRandomQuote)),
+			gw.UseProvider("motivational-spark", motivationalSpark, gw.WithOperations(domain.OperationRandomQuote)),
+			gw.UseProvider("textintoimages", textIntoImages, gw.WithOperations(domain.OperationRandomQuote)),
 		),
 		gw.WithRouting(gw.RoundRobin()),
-		gw.WithFallback(gw.FallbackOn(
-			gw.ErrorTimeout,
-			gw.ErrorUnavailable,
-			gw.ErrorRateLimited,
-		)),
-		gw.WithRetry(gw.Retry{
-			MaxAttempts: 2,
-			Backoff: gw.ExponentialBackoff{
+		gw.WithFailurePolicy(gw.RetryThenFailover(
+			1,
+			gw.ExponentialBackoff{
 				Initial: 100 * time.Millisecond,
 				Maximum: time.Second,
-				Jitter:  0.2,
 			},
-		}),
+			providers.IsRetryable,
+		)),
 		gw.WithRequestTimeout(8*time.Second),
-		gw.WithLogger(slog.Default()),
 	)
 }
 
 // quoteHandler serves one random quote per request from whichever provider
 // the gateway selects.
-func quoteHandler(quoteGateway *gw.Gateway[domain.QuoteRequest, domain.Quote]) http.HandlerFunc {
+func quoteHandler(quoteGateway *gw.Gateway) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		result, err := quoteGateway.HandleRequest(r.Context(), gw.Request[domain.QuoteRequest]{
-			Operation: domain.OperationRandomQuote,
-		})
+		result, err := quoteGateway.HandleRequest(
+			r.Context(),
+			gw.NewRequest(domain.OperationRandomQuote, domain.QuoteRequest{}),
+		)
 		if err != nil {
 			http.Error(w, err.Error(), statusForError(err))
 			return
 		}
+		quote, ok := gw.ValueAs[domain.Quote](result)
+		if !ok {
+			http.Error(w, "qoutes: provider returned an unexpected response", http.StatusBadGateway)
+			return
+		}
 
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("X-Quote-Provider", result.Provider)
-		_ = json.NewEncoder(w).Encode(result.Payload)
+		w.Header().Set("X-Quote-Provider", string(result.Provider()))
+		_ = json.NewEncoder(w).Encode(quote)
 	}
 }
 
 // statusForError maps a normalized gateway error to an HTTP status code.
 func statusForError(err error) int {
+	if statusCode, ok := providers.StatusCode(err); ok {
+		switch statusCode {
+		case http.StatusRequestTimeout, http.StatusGatewayTimeout:
+			return http.StatusGatewayTimeout
+		case http.StatusTooManyRequests:
+			return http.StatusTooManyRequests
+		}
+	}
+
 	gatewayError, ok := gw.AsError(err)
 	if !ok {
 		return http.StatusBadGateway
 	}
 
-	switch gatewayError.Kind {
-	case gw.ErrorTimeout:
+	switch gatewayError.Code {
+	case gw.CodeDeadlineExceeded:
 		return http.StatusGatewayTimeout
-	case gw.ErrorRateLimited:
-		return http.StatusTooManyRequests
-	case gw.ErrorValidation:
+	case gw.CodeInvalidRequest:
 		return http.StatusBadRequest
 	default:
 		return http.StatusBadGateway

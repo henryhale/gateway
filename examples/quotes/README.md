@@ -11,7 +11,7 @@ standard request out across unrelated third-party HTTP APIs.
 | Motivational Spark API | `https://motivational-spark-api.vercel.app/api/quotes/random` |
 | Text Into Images | `https://textintoimages.com/random-quote/api/` |
 
-Each provider has its own response schema; a `gw.Codec` per provider (see
+Each provider has its own response schema; an `httpgw.Codec` per provider (see
 [`providers`](./providers)) translates it into the standard `Quote` type
 defined in [`domain/quote.go`](./domain/quote.go). Application code, including the HTTP
 handler in [`main.go`](main.go), only ever sees `Quote`.
@@ -25,7 +25,7 @@ gateway retries and, if needed, falls back to a different provider.
 ```bash
 cp .env.example .env
 
-go run main.go
+go run .
 ```
 
 Then, in another terminal:
