@@ -1,3 +1,3 @@
 module github.com/henryhale/gateway
 
-go 1.26.5
+go 1.23.0
