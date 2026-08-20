@@ -1,6 +1,9 @@
-# Migrating to V1
+# Migrating from v0 to v1
 
 The earlier API bound one gateway instance to `Gateway[RequestPayload, ResponsePayload]`. The new API makes the routing kernel data-independent and moves typing to application/provider boundaries.
+
+See the [v1 guide](README.md) for the full API. The previous release
+documentation remains under [`docs/v0`](../v0/).
 
 ## Gateway construction
 
