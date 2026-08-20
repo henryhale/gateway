@@ -36,6 +36,9 @@ func NewForwardProvider(client *http.Client, baseURL string) (*ForwardProvider, 
 }
 
 // Handle forwards an HTTP request payload to the configured upstream.
+// The caller owns Response.Body and must close it after reading.
+//
+//nolint:bodyclose // response body is intentionally returned to the caller
 func (p *ForwardProvider) Handle(ctx context.Context, request gateway.Request) (any, error) {
 	incoming, ok := request.Value().(*http.Request)
 	if !ok || incoming == nil {

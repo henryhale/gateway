@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	gw "github.com/henryhale/gateway"
 	"github.com/henryhale/gateway/httpgw"
@@ -67,5 +68,15 @@ func main() {
 		_, _ = io.Copy(w, upstream.Body)
 	})
 
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	server := &http.Server{
+		Addr:              ":8080",
+		Handler:           http.DefaultServeMux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+
+	log.Println("http: proxy listening on", server.Addr)
+	log.Fatal(server.ListenAndServe())
 }
