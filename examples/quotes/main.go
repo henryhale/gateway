@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"os"
 	"time"
 
 	gw "github.com/henryhale/gateway"
@@ -18,9 +17,7 @@ import (
 )
 
 func main() {
-	if os.Getenv("QUOTES_API_ADDRESS") == "" {
-		log.Fatalf("qoutes: QUOTES_API_ADDRESS not set")
-	}
+	const addr = "127.0.0.1:7878"
 
 	quoteGateway, err := newQuoteGateway()
 	if err != nil {
@@ -31,7 +28,7 @@ func main() {
 	mux.HandleFunc("/quote", quoteHandler(quoteGateway))
 
 	server := &http.Server{
-		Addr:              os.Getenv("QUOTES_API_ADDRESS"),
+		Addr:              addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
@@ -39,8 +36,8 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	log.Printf("qoutes: random quote generator listening on %s", server.Addr)
-	log.Printf("qoutes: try it with: curl http://localhost%s/quote", server.Addr)
+	log.Println("qoutes: random quote generator listening")
+	log.Println("qoutes: try it with: curl http://localhost:7878/quote")
 
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("qoutes: server stopped: %v", err)
