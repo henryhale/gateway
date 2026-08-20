@@ -1,4 +1,4 @@
-.PHONY: fmt vet test race bench check
+.PHONY: fmt vet test race bench check lint
 
 fmt:
 	gofmt -w $$(find . -name '*.go' -type f)
@@ -15,4 +15,7 @@ race:
 bench:
 	go test -run '^$$' -bench . -benchmem ./...
 
-check: fmt vet test race
+check: fmt vet test race lint
+
+lint:
+	golangci-lint run --timeout 5m 2> /dev/null
