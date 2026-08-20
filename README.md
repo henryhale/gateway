@@ -23,9 +23,28 @@ Use this package to build gateways for payments, LLMs, notifications, storage, s
 - Retry and cross-provider fallback.
 - Request timeouts and structured logging.
 
+## Installation
+
+- Go 1.23 or later.
+- No third-party runtime dependencies.
+
+```bash
+go get github.com/henryhale/gateway
+```
+
+## Example
+
 A simple payment gateway can be setup as shown below:
 
 ```go
+package main
+
+import (
+    "log"
+    
+    gw "github.com/henryhale/gateway"
+)
+
 paymentGateway, err := gw.New(
     gw.WithProviders(
         gw.UseProvider(
@@ -74,18 +93,9 @@ if !ok {
 log.Printf("provider=%s response=%+v", result.Provider(), response)
 ```
 
-## Installation
-
-- Go 1.23 or later.
-- No third-party runtime dependencies.
-
-```bash
-go get github.com/henryhale/gateway
-```
-
 ## Documentation
 
-See [docs/index.md](docs/index.md) for the full guide.
+See [docs/README.md](docs/README.md) for the full guide.
 
 ## Development
 
