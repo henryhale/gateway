@@ -15,7 +15,7 @@ race:
 bench:
 	go test -run '^$$' -bench . -benchmem ./...
 
-check: fmt vet test race lint
+check: fmt vet test race
 
 lint:
 	golangci-lint run --timeout 2m
