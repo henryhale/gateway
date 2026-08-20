@@ -34,64 +34,22 @@ go get github.com/henryhale/gateway
 
 ## Example
 
-A simple payment gateway can be setup as shown below:
+A quotes gateway that routes one standard request across two quote APIs:
 
 ```go
-package main
-
-import (
-    "log"
-    
-    gw "github.com/henryhale/gateway"
+quoteGateway, err := gw.New(
+	gw.WithProviders(
+		gw.UseProvider("zenquotes", zenQuotes, gw.WithOperations("quote.random")),
+		gw.UseProvider("motivational-spark", motivationalSpark, gw.WithOperations("quote.random")),
+	),
+	gw.WithRouting(gw.RoundRobin()),
 )
-
-paymentGateway, err := gw.New(
-    gw.WithProviders(
-        gw.UseProvider(
-            "fastpay",
-            fastPay,
-            gw.WithOperations("payment.charge"),
-            gw.WithProviderPriority(1),
-            gw.WithProviderWeight(70),
-            gw.WithProviderCost(0.029),
-        ),
-        gw.UseProvider(
-            "safepay",
-            safePay,
-            gw.WithOperations("payment.charge"),
-            gw.WithProviderPriority(2),
-            gw.WithProviderWeight(30),
-            gw.WithProviderCost(0.032),
-        ),
-    ),
-    gw.WithRouting(gw.PowerOfTwo(gw.ByObservedLatency())),
-    gw.WithFailurePolicy(gw.StopOnFailure()),
-    gw.WithRequestTimeout(10*time.Second),
-)
-
 if err != nil {
-    log.Fatal(err)
+	log.Fatal(err)
 }
 ```
 
-The application calls one method:
-
-```go
-result, err := paymentGateway.HandleRequest(
-    ctx,
-    gw.NewRequest("payment.charge", charge),
-)
-if err != nil {
-    log.Fatal(err)
-}
-
-response, ok := gw.ValueAs[ChargeResponse](result)
-if !ok {
-    log.Fatal("unexpected payment response")
-}
-
-log.Printf("provider=%s response=%+v", result.Provider(), response)
-```
+A runnable version of this gateway is in [examples/quotes](examples/quotes).
 
 ## Documentation
 
@@ -115,4 +73,6 @@ go test -race ./...
 
 ## License
 
-MIT. See [LICENSE](LICENSE.txt) for details.
+Released under MIT License. See [LICENSE.txt](./LICENSE.txt) for details.
+
+&copy; 2026-present [Henry Hale](https://github.com/henryhale)
