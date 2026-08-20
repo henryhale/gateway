@@ -3,10 +3,10 @@ package gateway
 import (
 	"context"
 	cryptorand "crypto/rand"
-	"encoding/binary"
 	"errors"
 	"hash/fnv"
 	"math"
+	"math/big"
 	"sync/atomic"
 	"time"
 )
@@ -116,7 +116,7 @@ func Priority(ids ...ProviderID) RoutingStrategy {
 	})
 }
 
-type roundRobinStrategy struct{ counter atomic.Uint64 }
+type roundRobinStrategy struct{ counter atomic.Int64 }
 
 // RoundRobin selects eligible providers in a concurrency-safe rotating order.
 func RoundRobin() RoutingStrategy { return &roundRobinStrategy{} }
@@ -127,55 +127,30 @@ func (s *roundRobinStrategy) Select(_ context.Context, _ Request, candidates []C
 		return -1, errors.New("gateway: round-robin routing received no candidates")
 	}
 	n := s.counter.Add(1) - 1
-	return int(n % uint64(len(candidates))), nil
+	return int(n % int64(len(candidates))), nil
 }
 
-type fastRand struct{ state atomic.Uint64 }
-
-// newFastRand creates a lock-free pseudo-random source seeded from crypto/rand.
-func newFastRand() *fastRand {
-	var seedBytes [8]byte
-	_, _ = cryptorand.Read(seedBytes[:])
-	seed := binary.LittleEndian.Uint64(seedBytes[:])
-	if seed == 0 {
-		seed = uint64(time.Now().UnixNano()) | 1
-	}
-	r := &fastRand{}
-	r.state.Store(seed)
-	return r
-}
-
-// next advances the xorshift64* state and returns a pseudo-random value.
-func (r *fastRand) next() uint64 {
-	for {
-		old := r.state.Load()
-		x := old
-		x ^= x >> 12
-		x ^= x << 25
-		x ^= x >> 27
-		if r.state.CompareAndSwap(old, x) {
-			return x * 2685821657736338717
-		}
-	}
-}
-
-type randomStrategy struct{ random *fastRand }
+type randomStrategy struct{}
 
 // Random selects an eligible provider uniformly at random.
-func Random() RoutingStrategy { return &randomStrategy{random: newFastRand()} }
+func Random() RoutingStrategy { return &randomStrategy{} }
 
 // Select returns a uniformly selected candidate index.
 func (s *randomStrategy) Select(_ context.Context, _ Request, candidates []Candidate) (int, error) {
 	if len(candidates) == 0 {
 		return -1, errors.New("gateway: random routing received no candidates")
 	}
-	return int(s.random.next() % uint64(len(candidates))), nil
+	index, err := cryptoIndex(len(candidates))
+	if err != nil {
+		return -1, err
+	}
+	return index, nil
 }
 
-type weightedStrategy struct{ random *fastRand }
+type weightedStrategy struct{}
 
 // Weighted selects a provider in proportion to Candidate.Weight.
-func Weighted() RoutingStrategy { return &weightedStrategy{random: newFastRand()} }
+func Weighted() RoutingStrategy { return &weightedStrategy{} }
 
 // Select returns a weighted-random candidate index.
 func (s *weightedStrategy) Select(_ context.Context, _ Request, candidates []Candidate) (int, error) {
@@ -187,9 +162,16 @@ func (s *weightedStrategy) Select(_ context.Context, _ Request, candidates []Can
 		total += uint64(candidate.weight)
 	}
 	if total == 0 {
-		return int(s.random.next() % uint64(len(candidates))), nil
+		index, err := cryptoIndex(len(candidates))
+		if err != nil {
+			return -1, err
+		}
+		return index, nil
 	}
-	pick := s.random.next() % total
+	pick, err := cryptoUint64N(total)
+	if err != nil {
+		return -1, err
+	}
 	var running uint64
 	for i, candidate := range candidates {
 		running += uint64(candidate.weight)
@@ -229,7 +211,6 @@ func (s *leastStrategy) Select(_ context.Context, request Request, candidates []
 
 type powerOfTwoStrategy struct {
 	scorer Scorer
-	random *fastRand
 }
 
 // PowerOfTwo samples two candidates and selects the lower-scoring one.
@@ -237,7 +218,7 @@ func PowerOfTwo(scorer Scorer) RoutingStrategy {
 	if scorer == nil {
 		scorer = ByInFlight()
 	}
-	return &powerOfTwoStrategy{scorer: scorer, random: newFastRand()}
+	return &powerOfTwoStrategy{scorer: scorer}
 }
 
 // Select returns the better of two randomly sampled candidates.
@@ -248,8 +229,14 @@ func (s *powerOfTwoStrategy) Select(_ context.Context, request Request, candidat
 	if len(candidates) == 1 {
 		return 0, nil
 	}
-	first := int(s.random.next() % uint64(len(candidates)))
-	second := int(s.random.next() % uint64(len(candidates)-1))
+	first, err := cryptoIndex(len(candidates))
+	if err != nil {
+		return -1, err
+	}
+	second, err := cryptoIndex(len(candidates) - 1)
+	if err != nil {
+		return -1, err
+	}
 	if second >= first {
 		second++
 	}
@@ -291,6 +278,30 @@ func rendezvousHash(key string, id ProviderID) uint64 {
 	_, _ = h.Write([]byte{0})
 	_, _ = h.Write([]byte(id))
 	return h.Sum64()
+}
+
+// cryptoIndex returns a crypto-random index in the range [0, limit).
+func cryptoIndex(limit int) (int, error) {
+	if limit <= 0 {
+		return -1, errors.New("gateway: invalid random bound")
+	}
+	n, err := cryptorand.Int(cryptorand.Reader, big.NewInt(int64(limit)))
+	if err != nil {
+		return -1, err
+	}
+	return int(n.Int64()), nil
+}
+
+// cryptoUint64N returns a crypto-random uint64 in the range [0, limit).
+func cryptoUint64N(limit uint64) (uint64, error) {
+	if limit == 0 {
+		return 0, errors.New("gateway: invalid random bound")
+	}
+	n, err := cryptorand.Int(cryptorand.Reader, new(big.Int).SetUint64(limit))
+	if err != nil {
+		return 0, err
+	}
+	return n.Uint64(), nil
 }
 
 // ByObservedLatency scores lower observed latency as better.
