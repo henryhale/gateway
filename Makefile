@@ -18,4 +18,4 @@ bench:
 check: fmt vet test race lint
 
 lint:
-	golangci-lint run --timeout 5m 2> /dev/null
+	golangci-lint run --timeout 2m
