@@ -40,7 +40,13 @@ func (e *Error) Error() string {
 		return "<nil>"
 	}
 	if e.Provider != "" {
-		return fmt.Sprintf("gateway: %s: provider=%s operation=%s: %v", e.Code, e.Provider, e.Operation, e.Cause)
+		return fmt.Sprintf(
+			"gateway: %s: provider=%s operation=%s: %v",
+			e.Code,
+			e.Provider,
+			e.Operation,
+			e.Cause,
+		)
 	}
 	return fmt.Sprintf("gateway: %s: operation=%s: %v", e.Code, e.Operation, e.Cause)
 }

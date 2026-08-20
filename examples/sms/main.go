@@ -26,8 +26,18 @@ func (p SMSProvider) Handle(_ context.Context, request gw.Request) (any, error) 
 func main() {
 	gateway, err := gw.New(
 		gw.WithProviders(
-			gw.UseProvider("provider-a", SMSProvider{prefix: "a-"}, gw.WithOperations("sms.send"), gw.WithProviderWeight(70)),
-			gw.UseProvider("provider-b", SMSProvider{prefix: "b-"}, gw.WithOperations("sms.send"), gw.WithProviderWeight(30)),
+			gw.UseProvider(
+				"provider-a",
+				SMSProvider{prefix: "a-"},
+				gw.WithOperations("sms.send"),
+				gw.WithProviderWeight(70),
+			),
+			gw.UseProvider(
+				"provider-b",
+				SMSProvider{prefix: "b-"},
+				gw.WithOperations("sms.send"),
+				gw.WithProviderWeight(30),
+			),
 		),
 		gw.WithRouting(gw.Weighted()),
 	)
@@ -35,7 +45,10 @@ func main() {
 		panic(err)
 	}
 
-	result, err := gateway.HandleRequest(context.Background(), gw.NewRequest("sms.send", SMS{To: "+256700000000", Body: "hello"}))
+	result, err := gateway.HandleRequest(
+		context.Background(),
+		gw.NewRequest("sms.send", SMS{To: "+256700000000", Body: "hello"}),
+	)
 	if err != nil {
 		panic(err)
 	}

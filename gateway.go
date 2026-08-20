@@ -164,17 +164,29 @@ func New(options ...Option) (*Gateway, error) {
 // HandleRequest selects providers, executes the configured failure policy, and returns the first success.
 func (g *Gateway) HandleRequest(ctx context.Context, request Request) (Result, error) {
 	if g == nil {
-		return Result{}, &Error{Code: CodeInvalidRequest, Operation: request.operation, Cause: errors.New("nil gateway")}
+		return Result{}, &Error{
+			Code:      CodeInvalidRequest,
+			Operation: request.operation,
+			Cause:     errors.New("nil gateway"),
+		}
 	}
 	if ctx == nil {
-		return Result{}, &Error{Code: CodeInvalidRequest, Operation: request.operation, Cause: errors.New("nil context")}
+		return Result{}, &Error{
+			Code:      CodeInvalidRequest,
+			Operation: request.operation,
+			Cause:     errors.New("nil context"),
+		}
 	}
 	if request.operation == "" {
 		return Result{}, &Error{Code: CodeInvalidRequest, Cause: errors.New("operation is required")}
 	}
 	if request.providerHint != "" {
 		if _, exists := g.providerByID[request.providerHint]; !exists {
-			return Result{}, &Error{Code: CodeInvalidRequest, Operation: request.operation, Cause: fmt.Errorf("unknown provider hint %q", request.providerHint)}
+			return Result{}, &Error{
+				Code:      CodeInvalidRequest,
+				Operation: request.operation,
+				Cause:     fmt.Errorf("unknown provider hint %q", request.providerHint),
+			}
 		}
 	}
 
@@ -212,7 +224,12 @@ func (g *Gateway) HandleRequest(ctx context.Context, request Request) (Result, e
 			firstSelection = false
 			if err != nil {
 				if lastErr != nil {
-					return Result{}, &Error{Code: CodeAttemptsExhausted, Operation: request.operation, Attempt: attempt, Cause: lastErr}
+					return Result{}, &Error{
+						Code:      CodeAttemptsExhausted,
+						Operation: request.operation,
+						Attempt:   attempt,
+						Cause:     lastErr,
+					}
 				}
 				return Result{}, err
 			}
@@ -229,16 +246,46 @@ func (g *Gateway) HandleRequest(ctx context.Context, request Request) (Result, e
 
 		attempt++
 		providerAttempt++
-		g.emit(ctx, Event{Type: EventProviderSelected, RequestID: request.id, Operation: request.operation, Provider: entry.id, Attempt: attempt})
+		g.emit(
+			ctx,
+			Event{
+				Type:      EventProviderSelected,
+				RequestID: request.id,
+				Operation: request.operation,
+				Provider:  entry.id,
+				Attempt:   attempt,
+			},
+		)
 		attemptStarted := time.Now()
 		value, providerErr := entry.provider.Handle(ctx, request)
 		duration := time.Since(attemptStarted)
 		entry.release()
 		entry.observe(duration, providerErr)
-		g.emit(ctx, Event{Type: EventAttemptFinished, RequestID: request.id, Operation: request.operation, Provider: entry.id, Attempt: attempt, Duration: duration, Error: providerErr})
+		g.emit(
+			ctx,
+			Event{
+				Type:      EventAttemptFinished,
+				RequestID: request.id,
+				Operation: request.operation,
+				Provider:  entry.id,
+				Attempt:   attempt,
+				Duration:  duration,
+				Error:     providerErr,
+			},
+		)
 
 		if providerErr == nil {
-			g.emit(ctx, Event{Type: EventRequestFinished, RequestID: request.id, Operation: request.operation, Provider: entry.id, Attempt: attempt, Duration: time.Since(started)})
+			g.emit(
+				ctx,
+				Event{
+					Type:      EventRequestFinished,
+					RequestID: request.id,
+					Operation: request.operation,
+					Provider:  entry.id,
+					Attempt:   attempt,
+					Duration:  time.Since(started),
+				},
+			)
 			return Result{provider: entry.id, value: value}, nil
 		}
 		lastErr = providerErr
@@ -255,7 +302,13 @@ func (g *Gateway) HandleRequest(ctx context.Context, request Request) (Result, e
 		})
 		switch decision.Action {
 		case Stop:
-			return Result{}, &Error{Code: CodeProviderFailed, Operation: request.operation, Provider: entry.id, Attempt: attempt, Cause: providerErr}
+			return Result{}, &Error{
+				Code:      CodeProviderFailed,
+				Operation: request.operation,
+				Provider:  entry.id,
+				Attempt:   attempt,
+				Cause:     providerErr,
+			}
 		case RetryProvider:
 			if err := wait(ctx, decision.Delay); err != nil {
 				return Result{}, g.contextError(request.operation, currentProvider, attempt, err)
@@ -268,11 +321,22 @@ func (g *Gateway) HandleRequest(ctx context.Context, request Request) (Result, e
 				return Result{}, g.contextError(request.operation, -1, attempt, err)
 			}
 		default:
-			return Result{}, &Error{Code: CodeProviderFailed, Operation: request.operation, Provider: entry.id, Attempt: attempt, Cause: providerErr}
+			return Result{}, &Error{
+				Code:      CodeProviderFailed,
+				Operation: request.operation,
+				Provider:  entry.id,
+				Attempt:   attempt,
+				Cause:     providerErr,
+			}
 		}
 	}
 
-	return Result{}, &Error{Code: CodeAttemptsExhausted, Operation: request.operation, Attempt: attempt, Cause: lastErr}
+	return Result{}, &Error{
+		Code:      CodeAttemptsExhausted,
+		Operation: request.operation,
+		Attempt:   attempt,
+		Cause:     lastErr,
+	}
 }
 
 // Stats returns a point-in-time copy of local provider runtime statistics.
@@ -301,7 +365,12 @@ func (g *Gateway) Stats() []ProviderStats {
 }
 
 // selectProvider builds the current eligible set and asks the routing strategy for one index.
-func (g *Gateway) selectProvider(ctx context.Context, request Request, excluded []bool, firstSelection bool) (int, error) {
+func (g *Gateway) selectProvider(
+	ctx context.Context,
+	request Request,
+	excluded []bool,
+	firstSelection bool,
+) (int, error) {
 	if firstSelection && request.providerHint != "" {
 		index := g.providerByID[request.providerHint]
 		candidate, allowed, err := g.candidate(ctx, request, index, excluded)
@@ -341,7 +410,11 @@ func (g *Gateway) selectProvider(ctx context.Context, request Request, excluded 
 		}
 	}
 	if len(candidates) == 0 {
-		return -1, &Error{Code: CodeNoProvider, Operation: request.operation, Cause: errors.New("no eligible provider")}
+		return -1, &Error{
+			Code:      CodeNoProvider,
+			Operation: request.operation,
+			Cause:     errors.New("no eligible provider"),
+		}
 	}
 
 	selected, err := g.routing.Select(ctx, request, candidates)
@@ -349,7 +422,11 @@ func (g *Gateway) selectProvider(ctx context.Context, request Request, excluded 
 		return -1, &Error{Code: CodeRoutingFailed, Operation: request.operation, Cause: err}
 	}
 	if selected < 0 || selected >= len(candidates) {
-		return -1, &Error{Code: CodeRoutingFailed, Operation: request.operation, Cause: fmt.Errorf("routing strategy returned invalid candidate index %d", selected)}
+		return -1, &Error{
+			Code:      CodeRoutingFailed,
+			Operation: request.operation,
+			Cause:     fmt.Errorf("routing strategy returned invalid candidate index %d", selected),
+		}
 	}
 	return candidates[selected].index, nil
 }
@@ -387,7 +464,12 @@ func (g *Gateway) candidate(ctx context.Context, request Request, index int, exc
 	for _, filter := range entry.filters {
 		allowed, err := filter.Allow(ctx, request, candidate)
 		if err != nil {
-			return Candidate{}, false, &Error{Code: CodeRoutingFailed, Operation: request.operation, Provider: entry.id, Cause: fmt.Errorf("provider filter: %w", err)}
+			return Candidate{}, false, &Error{
+				Code:      CodeRoutingFailed,
+				Operation: request.operation,
+				Provider:  entry.id,
+				Cause:     fmt.Errorf("provider filter: %w", err),
+			}
 		}
 		if !allowed {
 			return Candidate{}, false, nil

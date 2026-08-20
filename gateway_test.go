@@ -101,7 +101,9 @@ func TestGatewayRetryThenFailover(t *testing.T) {
 			UseProvider("first", first, WithProviderPriority(0)),
 			UseProvider("second", second, WithProviderPriority(1)),
 		),
-		WithFailurePolicy(RetryThenFailover(2, NoBackoff(), func(err error) bool { return errors.Is(err, errTemporary) })),
+		WithFailurePolicy(
+			RetryThenFailover(2, NoBackoff(), func(err error) bool { return errors.Is(err, errTemporary) }),
+		),
 		WithMaxAttempts(8),
 	)
 	if err != nil {
@@ -142,9 +144,17 @@ func TestGatewayCooldown(t *testing.T) {
 	good := ProviderFunc(func(context.Context, Request) (any, error) { return "ok", nil })
 	g, err := New(
 		WithProviders(
-			UseProvider("bad", bad,
+			UseProvider(
+				"bad",
+				bad,
 				WithProviderPriority(0),
-				WithCooldown(CooldownConfig{Failures: 1, Duration: time.Second, When: func(err error) bool { return errors.Is(err, errTemporary) }}),
+				WithCooldown(
+					CooldownConfig{
+						Failures: 1,
+						Duration: time.Second,
+						When:     func(err error) bool { return errors.Is(err, errTemporary) },
+					},
+				),
 			),
 			UseProvider("good", good, WithProviderPriority(1)),
 		),

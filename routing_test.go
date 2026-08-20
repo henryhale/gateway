@@ -57,7 +57,11 @@ func TestLeast(t *testing.T) {
 // TestPowerOfTwoSingleCandidate verifies the strategy handles the one-provider case.
 func TestPowerOfTwoSingleCandidate(t *testing.T) {
 	strategy := PowerOfTwo(ByObservedLatency())
-	index, err := strategy.Select(context.Background(), Request{}, []Candidate{{id: "a", observedLatency: time.Millisecond}})
+	index, err := strategy.Select(
+		context.Background(),
+		Request{},
+		[]Candidate{{id: "a", observedLatency: time.Millisecond}},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

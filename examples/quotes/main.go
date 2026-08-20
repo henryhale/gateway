@@ -67,8 +67,16 @@ func newQuoteGateway() (*gw.Gateway, error) {
 	return gw.New(
 		gw.WithProviders(
 			gw.UseProvider("zenquotes", zenQuotes, gw.WithOperations(domain.OperationRandomQuote)),
-			gw.UseProvider("motivational-spark", motivationalSpark, gw.WithOperations(domain.OperationRandomQuote)),
-			gw.UseProvider("textintoimages", textIntoImages, gw.WithOperations(domain.OperationRandomQuote)),
+			gw.UseProvider(
+				"motivational-spark",
+				motivationalSpark,
+				gw.WithOperations(domain.OperationRandomQuote),
+			),
+			gw.UseProvider(
+				"textintoimages",
+				textIntoImages,
+				gw.WithOperations(domain.OperationRandomQuote),
+			),
 		),
 		gw.WithRouting(gw.RoundRobin()),
 		gw.WithFailurePolicy(gw.RetryThenFailover(

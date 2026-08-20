@@ -29,8 +29,20 @@ func main() {
 
 	gateway, err := gw.New(
 		gw.WithProviders(
-			gw.UseProvider("users-primary", usersPrimary, gw.WithOperations("http.proxy"), gw.WithFilter(usersFilter), gw.WithProviderPriority(1)),
-			gw.UseProvider("users-secondary", usersSecondary, gw.WithOperations("http.proxy"), gw.WithFilter(usersFilter), gw.WithProviderPriority(2)),
+			gw.UseProvider(
+				"users-primary",
+				usersPrimary,
+				gw.WithOperations("http.proxy"),
+				gw.WithFilter(usersFilter),
+				gw.WithProviderPriority(1),
+			),
+			gw.UseProvider(
+				"users-secondary",
+				usersSecondary,
+				gw.WithOperations("http.proxy"),
+				gw.WithFilter(usersFilter),
+				gw.WithProviderPriority(2),
+			),
 		),
 		gw.WithRouting(gw.PowerOfTwo(gw.ByInFlight())),
 	)
