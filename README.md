@@ -23,67 +23,37 @@ Use this package to build gateways for payments, LLMs, notifications, storage, s
 - Retry and cross-provider fallback.
 - Request timeouts and structured logging.
 
-A simple payment gateway can be setup as shown below:
-
-```go
-paymentGateway, err := gw.New[ChargeRequest, ChargeResponse](
-    gw.WithProviders(
-        gw.UseProvider(
-            fastPay,
-            gw.WithProviderPriority(1),
-            gw.WithProviderWeight(70),
-            gw.WithProviderCost(0.029),
-        ),
-        gw.UseProvider(
-            safePay,
-            gw.WithProviderPriority(2),
-            gw.WithProviderWeight(30),
-            gw.WithProviderCost(0.032),
-        ),
-    ),
-    gw.WithRouting(gw.PowerOfTwo(gw.ByObservedLatency())),
-    gw.WithFallback(gw.FallbackOn(
-        gw.ErrorRateLimited,
-        gw.ErrorTimeout,
-        gw.ErrorUnavailable,
-    )),
-    gw.WithRetry(gw.Retry{
-        MaxAttempts: 2,
-        Backoff: gw.ExponentialBackoff{
-            Initial: 100 * time.Millisecond,
-            Maximum: time.Second,
-        },
-    }),
-    gw.WithRequestTimeout(10*time.Second),
-    gw.WithLogger(slog.Default()),
-)
-
-if err != nil {
-    log.Fatal(err)
-}
-```
-
-The application calls one method:
-
-```go
-result, err := paymentGateway.HandleRequest(ctx, gw.Request[ChargeRequest]{
-    Operation: "payment.charge",
-    Payload:   charge,
-})
-```
-
 ## Installation
 
-- Go 1.26.5 or later.
+- Go 1.23 or later.
 - No third-party runtime dependencies.
 
 ```bash
 go get github.com/henryhale/gateway
 ```
 
+## Example
+
+A quotes gateway that routes one standard request across two quote APIs:
+
+```go
+quoteGateway, err := gw.New(
+	gw.WithProviders(
+		gw.UseProvider("zenquotes", zenQuotes, gw.WithOperations("quote.random")),
+		gw.UseProvider("motivational-spark", motivationalSpark, gw.WithOperations("quote.random")),
+	),
+	gw.WithRouting(gw.RoundRobin()),
+)
+if err != nil {
+	log.Fatal(err)
+}
+```
+
+A runnable version of this gateway is in [examples/quotes](examples/quotes).
+
 ## Documentation
 
-See [docs/index.md](docs/index.md) for the full guide.
+See [docs/README.md](docs/README.md) for the full guide.
 
 ## Development
 
@@ -103,4 +73,6 @@ go test -race ./...
 
 ## License
 
-MIT. See [LICENSE](LICENSE.txt) for details.
+Released under MIT License. See [LICENSE.txt](./LICENSE.txt) for details.
+
+&copy; 2026-present [Henry Hale](https://github.com/henryhale)

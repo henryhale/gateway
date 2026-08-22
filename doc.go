@@ -1,7 +1,10 @@
-// package gateway provides a transport-independent gateway and orchestration framework.
+// Package gateway provides a transport-independent, data-independent routing kernel.
 //
-// Applications define standard request and response models, implement one provider
-// adapter or HTTP codec per external service, select a built-in routing strategy,
-// and expose the resulting Gateway through any web framework, RPC server, worker,
-// command-line application, or background process.
+// A Gateway selects an eligible provider, executes it, applies an explicit failure
+// policy, and returns the provider's response. The package does not interpret,
+// serialize, persist, or otherwise own application payloads.
+//
+// Gateway configuration is immutable after construction and Gateway is safe for concurrent use.
+// Providers, filters, routing strategies, failure policies, and observers supplied
+// by callers may be invoked concurrently and must therefore be concurrency-safe.
 package gateway
