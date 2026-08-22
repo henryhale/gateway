@@ -14,7 +14,7 @@ A generic orchestration and gateway framework for routing one standard request f
 </div>
 
 
-Use this package to build gateways for payments, LLMs, notifications, storage, search, or any system that needs:
+Use this package to build gateways for notifications, storage, search, or any system that needs:
 
 - A unified application-facing interface.
 - Bidirectional payload translation.
