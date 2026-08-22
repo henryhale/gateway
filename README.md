@@ -3,7 +3,7 @@
 
 # gateway
 
-A generic orchestration and gateway framework for routing one standard request format across multiple external providers.
+A generic orchestration framework for routing one standard request format across multiple external providers.
 
 <a title="Go Reference" target="_blank" href="https://pkg.go.dev/github.com/henryhale/gateway"><img src="https://pkg.go.dev/badge/github.com/henryhale/gateway.svg"></a>
 <a title="License" target="_blank" href="https://github.com/henryhale/gateway/blob/master/LICENSE.txt"><img src="https://img.shields.io/github/license/henryhale/gateway"></a>
