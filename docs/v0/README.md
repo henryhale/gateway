@@ -50,7 +50,7 @@ Application code only ever sees these standard types:
 
 | Type | Purpose |
 | --- | --- |
-| `Operation` | A string identifying a capability, e.g. `"payment.charge"`. |
+| `Operation` | A string identifying a capability, e.g. `"weather.forecast"`. |
 | `Request[T]` | The standard request: `Operation`, `Payload`, plus optional `ID`, `IdempotencyKey`, `ProviderHint`, and `Metadata`. |
 | `Result[T]` | The standard response: `Payload`, the `Provider` that served it, and the `Attempts` made. |
 | `Attempt` | One provider invocation: timing, `ErrorKind`, `ErrorCode`, and success. |
@@ -71,16 +71,14 @@ type Provider[RequestPayload any, ResponsePayload any] interface {
 Define your standard payloads once and reuse them across every provider:
 
 ```go
-type ChargeRequest struct {
-    AmountCents  int64  `json:"amount_cents"`
-    Currency     string `json:"currency"`
-    CustomerID   string `json:"customer_id"`
-    PaymentToken string `json:"payment_token"`
+type ForecastRequest struct {
+    Location string `json:"location"`
+    Units    string `json:"units"`
 }
 
-type ChargeResponse struct {
-    TransactionID string `json:"transaction_id"`
-    Status        string `json:"status"`
+type ForecastResponse struct {
+    Temperature float64 `json:"temperature"`
+    Conditions  string  `json:"conditions"`
 }
 ```
 
@@ -104,23 +102,21 @@ type Codec[RequestPayload any, ResponsePayload any] interface {
 ```
 
 ```go
-type FastPayCodec struct{}
+type FastWeatherCodec struct{}
 
 // Supports reports whether this codec handles the operation.
-func (FastPayCodec) Supports(operation gw.Operation) bool {
-    return operation == "payment.charge"
+func (FastWeatherCodec) Supports(operation gw.Operation) bool {
+    return operation == "weather.forecast"
 }
 
 // Encode translates the standard request into the provider request.
-func (FastPayCodec) Encode(
+func (FastWeatherCodec) Encode(
     ctx context.Context,
-    request gw.Request[ChargeRequest],
+    request gw.Request[ForecastRequest],
 ) (gw.HTTPRequest, error) {
     body, err := json.Marshal(map[string]any{
-        "amount":   request.Payload.AmountCents,
-        "currency": request.Payload.Currency,
-        "customer": request.Payload.CustomerID,
-        "token":    request.Payload.PaymentToken,
+        "location": request.Payload.Location,
+        "units":    request.Payload.Units,
     })
     if err != nil {
         return gw.HTTPRequest{}, err
@@ -128,35 +124,35 @@ func (FastPayCodec) Encode(
 
     return gw.HTTPRequest{
         Method: http.MethodPost,
-        Path:   "/v1/charges",
+        Path:   "/v1/forecast",
         Body:   body,
     }, nil
 }
 
 // Decode translates the provider response into the standard response.
-func (FastPayCodec) Decode(
+func (FastWeatherCodec) Decode(
     ctx context.Context,
     response gw.HTTPResponse,
-) (ChargeResponse, error) {
+) (ForecastResponse, error) {
     if response.StatusCode < 200 || response.StatusCode >= 300 {
-        return ChargeResponse{}, gw.HTTPProviderError(
+        return ForecastResponse{}, gw.HTTPProviderError(
             response.StatusCode,
-            "fastpay_error",
+            "fastweather_error",
             string(response.Body),
         )
     }
 
     var providerResponse struct {
-        ID    string `json:"id"`
-        State string `json:"state"`
+        Temperature float64 `json:"temperature"`
+        Summary     string  `json:"summary"`
     }
     if err := json.Unmarshal(response.Body, &providerResponse); err != nil {
-        return ChargeResponse{}, err
+        return ForecastResponse{}, err
     }
 
-    return ChargeResponse{
-        TransactionID: providerResponse.ID,
-        Status:        providerResponse.State,
+    return ForecastResponse{
+        Temperature: providerResponse.Temperature,
+        Conditions:  providerResponse.Summary,
     }, nil
 }
 ```
@@ -164,17 +160,17 @@ func (FastPayCodec) Decode(
 Create the provider from the codec:
 
 ```go
-fastPay := gw.NewHTTPProvider(
-    "fastpay",
+fastWeather := gw.NewHTTPProvider(
+    "fastweather",
     gw.HTTPProviderConfig{
-        BaseURL: "https://api.fastpay.example",
+        BaseURL: "https://api.fastweather.example",
         Headers: http.Header{
-            "Authorization": []string{"Bearer " + os.Getenv("FASTPAY_API_KEY")},
+            "Authorization": []string{"Bearer " + os.Getenv("FASTWEATHER_API_KEY")},
         },
         Timeout:          5 * time.Second,
         MaxResponseBytes: 10 << 20,
     },
-    FastPayCodec{},
+    FastWeatherCodec{},
 )
 ```
 
@@ -204,24 +200,25 @@ func (p *SDKProvider) Name() string {
 
 // Supports reports whether the provider handles an operation.
 func (p *SDKProvider) Supports(operation gw.Operation) bool {
-    return operation == "payment.charge"
+    return operation == "weather.forecast"
 }
 
 // Execute performs translation and invokes the custom transport.
 func (p *SDKProvider) Execute(
     ctx context.Context,
-    request gw.Request[ChargeRequest],
-) (ChargeResponse, error) {
-    response, err := p.client.Charge(ctx, vendor.ChargeInput{
-        Amount: request.Payload.AmountCents,
+    request gw.Request[ForecastRequest],
+) (ForecastResponse, error) {
+    response, err := p.client.Forecast(ctx, vendor.ForecastInput{
+        Location: request.Payload.Location,
+        Units:    request.Payload.Units,
     })
     if err != nil {
-        return ChargeResponse{}, normalizeVendorError(err)
+        return ForecastResponse{}, normalizeVendorError(err)
     }
 
-    return ChargeResponse{
-        TransactionID: response.ID,
-        Status:        response.Status,
+    return ForecastResponse{
+        Temperature: response.Temperature,
+        Conditions:  response.Summary,
     }, nil
 }
 ```
@@ -238,16 +235,16 @@ classify the failure, or a plain `error` otherwise; the gateway wraps it with
 `gw.New` takes functional options and returns a `*Gateway[RequestPayload, ResponsePayload]`:
 
 ```go
-paymentGateway, err := gw.New[ChargeRequest, ChargeResponse](
+weatherGateway, err := gw.New[ForecastRequest, ForecastResponse](
     gw.WithProviders(
         gw.UseProvider(
-            fastPay,
+            fastWeather,
             gw.WithProviderPriority(1),
             gw.WithProviderWeight(70),
             gw.WithProviderCost(0.029),
         ),
         gw.UseProvider(
-            safePay,
+            safeWeather,
             gw.WithProviderPriority(2),
             gw.WithProviderWeight(30),
             gw.WithProviderCost(0.032),
@@ -304,7 +301,7 @@ Options omitted from `gw.New` fall back to these defaults:
 ### Priority
 
 ```go
-gw.WithRouting(gw.Priority("fastpay", "safepay"))
+gw.WithRouting(gw.Priority("fastweather", "safeweather"))
 ```
 
 Explicit names take precedence, in the order listed. Providers omitted from
@@ -322,8 +319,8 @@ Distributes calls across currently eligible providers in a stable rotation.
 
 ```go
 gw.WithRouting(gw.Weighted(map[string]int{
-    "fastpay": 70,
-    "safepay": 30,
+    "fastweather": 70,
+    "safeweather": 30,
 }))
 ```
 
@@ -408,7 +405,7 @@ choose retry/fallback policies conservatively.
 Every error returned by a gateway can be unwrapped into a `*gw.GatewayError`:
 
 ```go
-result, err := paymentGateway.HandleRequest(ctx, request)
+result, err := weatherGateway.HandleRequest(ctx, request)
 if err != nil {
     gatewayError, ok := gw.AsError(err)
     if !ok {
@@ -421,7 +418,7 @@ if err != nil {
     case gw.ErrorRateLimited:
         // Return 429 or queue the request.
     case gw.ErrorTimeout:
-        // Return 504 or start reconciliation.
+        // Return 504 or serve a cached forecast.
     default:
         // Return an application-safe gateway error.
     }
@@ -437,8 +434,8 @@ if err != nil {
   metrics. Framework-generated codes (e.g. `gw.CodeResponseTooLarge`,
   `gw.CodeRoutingFailed`) are declared as constants in
   [`errors.go`](../../errors.go); provider adapters may also set their own
-  arbitrary `Code` values (as `FastPayCodec.Decode` does above with
-  `"fastpay_error"`).
+  arbitrary `Code` values (as `FastWeatherCodec.Decode` does above with
+  `"fastweather_error"`).
 
 Construct normalized errors from an HTTP status with `gw.HTTPProviderError`,
 which also classifies the `Kind` and sets `Retryable`/`Fallbackable` for
@@ -482,18 +479,17 @@ directly with:
 Example `net/http` usage:
 
 ```go
-func handler(gateway *gw.Gateway[ChargeRequest, ChargeResponse]) http.HandlerFunc {
+func handler(gateway *gw.Gateway[ForecastRequest, ForecastResponse]) http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
-        var payload ChargeRequest
+        var payload ForecastRequest
         if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
             http.Error(w, "invalid JSON", http.StatusBadRequest)
             return
         }
 
-        result, err := gateway.HandleRequest(r.Context(), gw.Request[ChargeRequest]{
-            Operation:      "payment.charge",
-            IdempotencyKey: r.Header.Get("Idempotency-Key"),
-            Payload:        payload,
+        result, err := gateway.HandleRequest(r.Context(), gw.Request[ForecastRequest]{
+            Operation: "weather.forecast",
+            Payload:   payload,
         })
         if err != nil {
             http.Error(w, err.Error(), http.StatusBadGateway)
@@ -514,7 +510,7 @@ A request can target a registered provider directly, bypassing the routing
 strategy for the first attempt:
 
 ```go
-request.ProviderHint = "safepay"
+request.ProviderHint = "safeweather"
 ```
 
 The hinted provider must be registered and support the requested operation,

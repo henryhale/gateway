@@ -149,7 +149,7 @@ model, see [examples/quotes](../../examples/quotes/).
 
 | Type | Purpose |
 | --- | --- |
-| `Operation` | String naming a capability, e.g. `"payment.collect"`. Eligibility is keyed on it. |
+| `Operation` | String naming a capability, e.g. `"catalog.lookup"`. Eligibility is keyed on it. |
 | `ProviderID` | Gateway-local provider identifier. Must be non-empty and unique. |
 | `Request` | Immutable envelope: operation, opaque value, optional affinity key, request ID, and provider hint. |
 | `Result` | A success: the opaque response value and the `ProviderID` that produced it. |
@@ -164,15 +164,15 @@ model, see [examples/quotes](../../examples/quotes/).
 Define the standard payloads once and reuse them across every provider:
 
 ```go
-type Collection struct {
-    Reference string
-    Amount    int64
-    Currency  string
+type ProductQuery struct {
+    SKU    string
+    Region string
 }
 
-type CollectionResult struct {
-    TransactionID string
-    Status        string
+type ProductResult struct {
+    SKU       string
+    Name      string
+    Available bool
 }
 ```
 
@@ -204,14 +204,14 @@ One implementation can serve several operations by switching on the
 operation and asserting the payload type:
 
 ```go
-type MobileMoney struct{ name string }
+type CatalogService struct{ name string }
 
-func (p MobileMoney) Handle(ctx context.Context, request gw.Request) (any, error) {
+func (p CatalogService) Handle(ctx context.Context, request gw.Request) (any, error) {
     switch request.Operation() {
-    case "payment.collect":
-        return p.collect(ctx, request.Value().(Collection))
-    case "payment.balance":
-        return p.balance(ctx, request.Value().(BalanceRequest))
+    case "catalog.lookup":
+        return p.lookup(ctx, request.Value().(ProductQuery))
+    case "catalog.availability":
+        return p.availability(ctx, request.Value().(AvailabilityQuery))
     default:
         return nil, ErrUnsupported
     }
@@ -222,9 +222,9 @@ Capability is declared at registration rather than in the implementation:
 
 ```go
 gw.UseProvider(
-    "mtn",
-    MobileMoney{name: "mtn"},
-    gw.WithOperations("payment.collect", "payment.balance"),
+    "catalog-primary",
+    CatalogService{name: "catalog-primary"},
+    gw.WithOperations("catalog.lookup", "catalog.availability"),
 )
 ```
 
@@ -245,12 +245,12 @@ its own credentials, region, priority, weight, cost, filters, and limits:
 
 ```go
 gw.WithProviders(
-    gw.UseProvider("mtn-ug", MobileMoney{name: "mtn-ug"},
-        gw.WithOperations("payment.collect"),
+    gw.UseProvider("catalog-eu", CatalogService{name: "catalog-eu"},
+        gw.WithOperations("catalog.lookup"),
         gw.WithProviderPriority(1),
     ),
-    gw.UseProvider("mtn-ke", MobileMoney{name: "mtn-ke"},
-        gw.WithOperations("payment.collect"),
+    gw.UseProvider("catalog-us", CatalogService{name: "catalog-us"},
+        gw.WithOperations("catalog.lookup"),
         gw.WithProviderPriority(2),
     ),
 )
@@ -322,9 +322,9 @@ Notes on `httpgw.ForwardProvider`:
 gateway, err := gw.New(
     gw.WithProviders(
         gw.UseProvider(
-            "mtn",
-            MobileMoney{name: "mtn"},
-            gw.WithOperations("payment.collect", "payment.balance"),
+            "catalog-primary",
+            CatalogService{name: "catalog-primary"},
+            gw.WithOperations("catalog.lookup", "catalog.availability"),
             gw.WithProviderPriority(1),
             gw.WithProviderCost(0.019),
             gw.WithMaxInFlight(100),
@@ -335,14 +335,14 @@ gateway, err := gw.New(
             }),
         ),
         gw.UseProvider(
-            "airtel",
-            MobileMoney{name: "airtel"},
-            gw.WithOperations("payment.collect"),
+            "catalog-secondary",
+            CatalogService{name: "catalog-secondary"},
+            gw.WithOperations("catalog.lookup"),
             gw.WithProviderPriority(2),
             gw.WithProviderCost(0.021),
         ),
     ),
-    gw.WithRouting(gw.Priority("mtn", "airtel")),
+    gw.WithRouting(gw.Priority("catalog-primary", "catalog-secondary")),
     gw.WithFailurePolicy(gw.FailoverWhen(func(err error) bool {
         return errors.Is(err, errUnavailable)
     })),
@@ -392,10 +392,10 @@ surface from `gw.New`, not from `gw.UseProvider`.
 
 ```go
 request := gw.NewRequest(
-    "payment.collect",
-    Collection{Reference: "ORDER-1001", Amount: 50000, Currency: "UGX"},
+    "catalog.lookup",
+    ProductQuery{SKU: "SKU-1001", Region: "eu"},
     gw.WithRequestID("req-8ac1"),
-    gw.WithKey("customer-42"),
+    gw.WithKey("catalog-eu"),
 )
 ```
 
@@ -418,7 +418,7 @@ if err != nil {
     return err
 }
 
-collection, ok := gw.ValueAs[CollectionResult](result)
+product, ok := gw.ValueAs[ProductResult](result)
 if !ok {
     return fmt.Errorf("unexpected result type from %s", result.Provider())
 }
@@ -454,7 +454,7 @@ process only. They are not shared across instances.
 
 ```go
 gw.WithRouting(gw.Priority())
-gw.WithRouting(gw.Priority("mtn", "airtel"))
+gw.WithRouting(gw.Priority("catalog-primary", "catalog-secondary"))
 ```
 
 Without IDs, the candidate with the lowest `WithProviderPriority` value
@@ -574,19 +574,19 @@ type Filter interface {
 
 ```go
 gw.UseProvider(
-    "mtn",
-    mtn,
-    gw.WithOperations("payment.collect"),
+    "catalog-eu",
+    catalogEU,
+    gw.WithOperations("catalog.lookup"),
     gw.WithFilter(gw.FilterFunc(
         func(_ context.Context, request gw.Request, _ gw.Candidate) (bool, error) {
-            collection, ok := request.Value().(Collection)
-            return ok && collection.Currency == "UGX", nil
+            query, ok := request.Value().(ProductQuery)
+            return ok && query.Region == "eu", nil
         },
     )),
 )
 ```
 
-Filters can express currency or country support, tenant allow and deny
+Filters can express region or language support, tenant allow and deny
 rules, provider region, external quota or rate limits, distributed health
 state, account-specific capacity, and request feature compatibility.
 Cooldown state is process-local, so a filter backed by shared storage is
@@ -665,12 +665,11 @@ return a `FailureDecision` holding a `FailureAction` and an optional
 
 ### Non-idempotent operations
 
-Do not enable replay because a client returned a timeout. A timeout leaves
-the provider-side outcome unknown: a payment authorization may have been
-committed while the response was lost, and replaying it to the same or
-another provider can double-charge. Establish idempotency keys or
-reconciliation first, then narrow the predicate to errors that are provably
-safe to replay.
+Do not enable replay merely because a client returned a timeout. A timeout
+leaves the provider-side outcome unknown: an SMS may have been accepted while
+the response was lost, and replaying it can send duplicate notifications.
+Establish idempotency keys or reconciliation first, then narrow the predicate
+to errors that are provably safe to replay.
 
 ## Cooldown and bulkheads
 
@@ -692,7 +691,7 @@ gw.WithCooldown(gw.CooldownConfig{
 ```
 
 The `When` predicate decides which errors count. It is required in practice:
-without it, a business rejection such as "insufficient funds" would be
+without it, a request rejection such as "invalid query" would be
 treated as provider ill-health and take a working provider out of rotation.
 `Failures` and `Duration` must both be greater than zero.
 
@@ -756,8 +755,8 @@ if err != nil {
                 gwErr.Code, gwErr.Provider, gwErr.Cause)
         }
     }
-    if errors.Is(err, errInsufficientFunds) {
-        return ErrDeclined
+    if errors.Is(err, errProductNotFound) {
+        return ErrNotFound
     }
     return err
 }
@@ -799,7 +798,7 @@ gw.WithObserver(gw.ObserverFunc(func(_ context.Context, event gw.Event) {
 Notes on observers:
 
 - `Event` carries no payloads — only event type, request ID, operation,
-  provider ID, attempt number, duration, and error. Payment, SMS, and model
+  provider ID, attempt number, duration, and error. SMS, catalog, and model
   payloads cannot leak through it.
 - A failed request emits no `EventRequestFinished`; the error is returned to
   the caller instead.
@@ -835,9 +834,9 @@ A hint asks for one specific provider:
 
 ```go
 request := gw.NewRequest(
-    "payment.collect",
-    collection,
-    gw.WithProviderHint("mtn"),
+    "catalog.lookup",
+    query,
+    gw.WithProviderHint("catalog-primary"),
 )
 ```
 
@@ -857,7 +856,7 @@ Notes on hints:
   translates three live third-party HTTP APIs into one response model.
 - `simulated` [HTTP reverse proxy](../../examples/http/main.go) — routes
   streaming HTTP requests across local upstream services.
-- `simulated` [Payment gateway](../../examples/payment/main.go) —
+- `simulated` [Catalog gateway](../../examples/catalog/main.go) —
   multi-operation providers, explicit failover, cooldown, and bulkheads.
 - `simulated` [Weighted SMS routing](../../examples/sms/main.go) —
   distributes requests using provider weights.

@@ -10,7 +10,7 @@ documentation remains under [`docs/v0`](../v0/).
 Before:
 
 ```go
-gateway, err := gw.New[ChargeRequest, ChargeResponse](...)
+gateway, err := gw.New[ForecastRequest, ForecastResponse](...)
 ```
 
 Now:
@@ -43,9 +43,9 @@ Provider identity and static operation support move to registration:
 
 ```go
 gw.UseProvider(
-    "stripe",
-    stripe,
-    gw.WithOperations("payment.collect", "payment.refund"),
+    "weather-service",
+    weatherService,
+    gw.WithOperations("weather.current", "weather.forecast"),
 )
 ```
 
@@ -54,16 +54,16 @@ gw.UseProvider(
 Before:
 
 ```go
-gw.Request[ChargeRequest]{
-    Operation: "payment.charge",
-    Payload: charge,
+gw.Request[ForecastRequest]{
+    Operation: "weather.forecast",
+    Payload: forecastRequest,
 }
 ```
 
 Now:
 
 ```go
-gw.NewRequest("payment.charge", charge)
+gw.NewRequest("weather.forecast", forecastRequest)
 ```
 
 ## Results
@@ -77,7 +77,7 @@ response := result.Payload
 Now:
 
 ```go
-response, ok := gw.ValueAs[ChargeResponse](result)
+response, ok := gw.ValueAs[ForecastResponse](result)
 ```
 
 ## Retry and fallback
