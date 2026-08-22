@@ -23,6 +23,13 @@ Use this package to build gateways for notifications, storage, search, or any sy
 - Retry and cross-provider fallback.
 - Request timeouts and structured logging.
 
+It is reasonable for:
+
+  - A prototype or separate generic orchestration service.
+  - Routing safe, idempotent reads among interchangeable upstreams.
+  - Routing between redundant upstream endpoints inside one provider adapter.
+
+
 ## Installation
 
 - Go 1.23 or later.
