@@ -56,7 +56,7 @@ if err != nil {
 }
 ```
 
-A runnable version of this gateway is in [examples/quotes](examples/quotes).
+A runnable version of this gateway is in [_examples/quotes](_examples/quotes).
 
 ## Documentation
 

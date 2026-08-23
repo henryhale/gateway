@@ -7,7 +7,7 @@ import (
 	"net/http"
 
 	gw "github.com/henryhale/gateway"
-	"github.com/henryhale/gateway/examples/quotes/domain"
+	"github.com/henryhale/gateway/_examples/quotes/domain"
 )
 
 // ZenQuotesCodec translates between the standard quote types and the

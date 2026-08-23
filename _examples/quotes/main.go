@@ -11,8 +11,8 @@ import (
 	"time"
 
 	gw "github.com/henryhale/gateway"
-	"github.com/henryhale/gateway/examples/quotes/domain"
-	"github.com/henryhale/gateway/examples/quotes/providers"
+	"github.com/henryhale/gateway/_examples/quotes/domain"
+	"github.com/henryhale/gateway/_examples/quotes/providers"
 	"github.com/henryhale/gateway/httpgw"
 )
 

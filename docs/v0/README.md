@@ -39,11 +39,11 @@ Building a gateway means doing five things:
 
 ## Quick start
 
-🚀 Learn by example - see [Random Quotes Generator](../../examples/quotes/) showcasing how every concept you need.
+🚀 Learn by example - see [Random Quotes Generator](../../_examples/quotes/) showcasing how every concept you need.
 
 ## Core types
 
-> Source: [`types.go`](../../types.go), [`provider.go`](../../provider.go)
+> Source: [`types.go`](https://github.com/henryhale/gateway/blob/v0.1.0/types.go), [`provider.go`](https://github.com/henryhale/gateway/blob/v0.1.0/provider.go)
 
 Every gateway is generic over one request payload and one response payload.
 Application code only ever sees these standard types:
@@ -87,7 +87,7 @@ application code.
 
 ## HTTP provider
 
-> Source: [`http_provider.go`](../../http_provider.go)
+> Source: [`http_provider.go`](https://github.com/henryhale/gateway/blob/v0.1.0/http_provider.go)
 
 Use `NewHTTPProvider` when the external service speaks HTTP. It handles the
 `net/http` request lifecycle for you; you only implement a `Codec` that
@@ -183,7 +183,7 @@ Notes on `HTTPProviderConfig`:
 
 ## Transport-independent provider
 
-> Source: [`provider.go`](../../provider.go)
+> Source: [`provider.go`](https://github.com/henryhale/gateway/blob/v0.1.0/provider.go)
 
 Implement `Provider` directly for an SDK, gRPC client, queue, local model,
 database, or any transport that isn't plain HTTP.
@@ -230,7 +230,7 @@ classify the failure, or a plain `error` otherwise; the gateway wraps it with
 
 ## Gateway construction
 
-> Source: [`gateway.go`](../../gateway.go), [`options.go`](../../options.go)
+> Source: [`gateway.go`](https://github.com/henryhale/gateway/blob/v0.1.0/gateway.go), [`options.go`](https://github.com/henryhale/gateway/blob/v0.1.0/options.go)
 
 `gw.New` takes functional options and returns a `*Gateway[RequestPayload, ResponsePayload]`:
 
@@ -296,7 +296,7 @@ Options omitted from `gw.New` fall back to these defaults:
 
 ## Routing strategies
 
-> Source: [`routing.go`](../../routing.go)
+> Source: [`routing.go`](https://github.com/henryhale/gateway/blob/v0.1.0/routing.go)
 
 ### Priority
 
@@ -364,7 +364,7 @@ type RoutingStrategy interface {
 
 ## Retry and fallback
 
-> Source: [`resilience.go`](../../resilience.go)
+> Source: [`resilience.go`](https://github.com/henryhale/gateway/blob/v0.1.0/resilience.go)
 
 Retries repeat a request against the **same** provider. Fallback moves to a
 **different** provider. They are independent and can be combined.
@@ -400,7 +400,7 @@ choose retry/fallback policies conservatively.
 
 ## Error handling
 
-> Source: [`errors.go`](../../errors.go)
+> Source: [`errors.go`](https://github.com/henryhale/gateway/blob/v0.1.0/errors.go)
 
 Every error returned by a gateway can be unwrapped into a `*gw.GatewayError`:
 
@@ -433,7 +433,7 @@ if err != nil {
 - `Code` (`gw.ErrorCode`) — a finer-grained reason, useful for logging and
   metrics. Framework-generated codes (e.g. `gw.CodeResponseTooLarge`,
   `gw.CodeRoutingFailed`) are declared as constants in
-  [`errors.go`](../../errors.go); provider adapters may also set their own
+  [`errors.go`](https://github.com/henryhale/gateway/blob/v0.1.0/errors.go); provider adapters may also set their own
   arbitrary `Code` values (as `FastWeatherCodec.Decode` does above with
   `"fastweather_error"`).
 
@@ -443,7 +443,7 @@ transient statuses (429, 5xx, and request/gateway timeouts).
 
 ## Logging
 
-> Source: [`options.go`](../../options.go) (`WithLogger`), [`gateway.go`](../../gateway.go) (log call sites)
+> Source: [`options.go`](https://github.com/henryhale/gateway/blob/v0.1.0/options.go) (`WithLogger`), [`gateway.go`](https://github.com/henryhale/gateway/blob/v0.1.0/gateway.go) (log call sites)
 
 `gw.WithLogger` accepts a standard library `*slog.Logger`. The gateway logs
 request lifecycle events — start, completion, fallback, and per-attempt
@@ -504,7 +504,7 @@ func handler(gateway *gw.Gateway[ForecastRequest, ForecastResponse]) http.Handle
 
 ## Provider hints
 
-> Source: [`types.go`](../../types.go) (`Request.ProviderHint`), [`gateway.go`](../../gateway.go) (`validateRequest`)
+> Source: [`types.go`](https://github.com/henryhale/gateway/blob/v0.1.0/types.go) (`Request.ProviderHint`), [`gateway.go`](https://github.com/henryhale/gateway/blob/v0.1.0/gateway.go) (`validateRequest`)
 
 A request can target a registered provider directly, bypassing the routing
 strategy for the first attempt:

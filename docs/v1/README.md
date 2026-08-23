@@ -140,7 +140,7 @@ func main() {
 ```
 
 For a gateway that translates three live third-party APIs into one response
-model, see [examples/quotes](../../examples/quotes/).
+model, see [_examples/quotes](../../_examples/quotes/).
 
 ## Core types
 
@@ -852,13 +852,13 @@ Notes on hints:
 
 ## Examples
 
-- `real` [Random quotes gateway](../../examples/quotes/README.md) —
+- `real` [Random quotes gateway](../../_examples/quotes/README.md) —
   translates three live third-party HTTP APIs into one response model.
-- `simulated` [HTTP reverse proxy](../../examples/http/main.go) — routes
+- `simulated` [HTTP reverse proxy](../../_examples/http/main.go) — routes
   streaming HTTP requests across local upstream services.
-- `simulated` [Catalog gateway](../../examples/catalog/main.go) —
+- `simulated` [Catalog gateway](../../_examples/catalog/main.go) —
   multi-operation providers, explicit failover, cooldown, and bulkheads.
-- `simulated` [Weighted SMS routing](../../examples/sms/main.go) —
+- `simulated` [Weighted SMS routing](../../_examples/sms/main.go) —
   distributes requests using provider weights.
 
 ## Further reading
