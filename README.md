@@ -1,5 +1,5 @@
 <div align=center>
-<img src="./assets/logo.svg" width=45 height=45 />
+<img src="./_assets/logo.svg" width=45 height=45 />
 
 # gateway
 
@@ -60,7 +60,7 @@ A runnable version of this gateway is in [_examples/quotes](_examples/quotes).
 
 ## Documentation
 
-See [docs/README.md](docs/README.md) for the full guide.
+See [_docs/README.md](_docs/README.md) for the full guide.
 
 ## Development
 

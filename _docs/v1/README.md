@@ -13,7 +13,7 @@ import gw "github.com/henryhale/gateway"
 
 v1 changes the API from v0.1.0. See [migration.md](migration.md) for the
 before/after mapping; the previous release documentation remains under
-[`docs/v0`](../v0/).
+[`_docs/v0`](../v0/).
 
 ## Contents
 
