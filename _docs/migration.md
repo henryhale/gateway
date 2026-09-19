@@ -3,7 +3,7 @@
 The earlier API bound one gateway instance to `Gateway[RequestPayload, ResponsePayload]`. The new API makes the routing kernel data-independent and moves typing to application/provider boundaries.
 
 See the [v1 guide](README.md) for the full API. The previous release
-documentation remains under [`_docs/v0`](../v0/).
+documentation remains at the [`v0.1.0` tag](https://github.com/henryhale/gateway/blob/v0.1.0/docs/index.md).
 
 ## Gateway construction
 
