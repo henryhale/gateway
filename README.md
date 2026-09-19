@@ -1,5 +1,5 @@
 <div align=center>
-<img src="./_assets/logo.svg" width=45 height=45 />
+<img src="https://raw.githubusercontent.com/henryhale/gateway/master/_assets/logo.svg" width=45 height=45 />
 
 # gateway
 
@@ -56,11 +56,11 @@ if err != nil {
 }
 ```
 
-A runnable version of this gateway is in [_examples/quotes](_examples/quotes).
+A runnable version of this gateway is in [_examples/quotes](https://github.com/henryhale/gateway/blob/master/_examples/quotes).
 
 ## Documentation
 
-See [_docs/README.md](_docs/README.md) for the full guide.
+See [_docs/README.md](https://github.com/henryhale/gateway/blob/master/_docs/README.md) for the full guide.
 
 ## Development
 
@@ -80,6 +80,6 @@ go test -race ./...
 
 ## License
 
-Released under MIT License. See [LICENSE.txt](./LICENSE.txt) for details.
+Released under MIT License. See [LICENSE.txt](https://github.com/henryhale/gateway/blob/master/LICENSE.txt) for details.
 
 &copy; 2026-present [Henry Hale](https://github.com/henryhale)

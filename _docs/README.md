@@ -37,7 +37,7 @@ before/after mapping; the previous release documentation remains at the
 
 ## Overview
 
-> Source: [`doc.go`](../doc.go), [`gateway.go`](../gateway.go)
+> Source: [`doc.go`](https://github.com/henryhale/gateway/blob/master/doc.go), [`gateway.go`](https://github.com/henryhale/gateway/blob/master/gateway.go)
 
 A gateway routes one standard request to one of several interchangeable
 providers. It selects an eligible provider, executes it, applies a failure
@@ -140,12 +140,12 @@ func main() {
 ```
 
 For a gateway that translates three live third-party APIs into one response
-model, see [_examples/quotes](../_examples/quotes/).
+model, see [_examples/quotes](https://github.com/henryhale/gateway/blob/master/_examples/quotes/).
 
 ## Core types
 
-> Source: [`request.go`](../request.go), [`provider.go`](../provider.go),
-> [`routing.go`](../routing.go), [`failure.go`](../failure.go)
+> Source: [`request.go`](https://github.com/henryhale/gateway/blob/master/request.go), [`provider.go`](https://github.com/henryhale/gateway/blob/master/provider.go),
+> [`routing.go`](https://github.com/henryhale/gateway/blob/master/routing.go), [`failure.go`](https://github.com/henryhale/gateway/blob/master/failure.go)
 
 | Type | Purpose |
 | --- | --- |
@@ -185,7 +185,7 @@ need no named type: `ProviderFunc`, `FilterFunc`, `RoutingFunc`,
 
 ## Providers
 
-> Source: [`provider.go`](../provider.go)
+> Source: [`provider.go`](https://github.com/henryhale/gateway/blob/master/provider.go)
 
 A provider has one responsibility — execute a request:
 
@@ -265,8 +265,8 @@ mutexes, or channels.
 
 ## HTTP providers
 
-> Source: [`httpgw/provider.go`](../httpgw/provider.go),
-> [`httpgw/forward.go`](../httpgw/forward.go)
+> Source: [`httpgw/provider.go`](https://github.com/henryhale/gateway/blob/master/httpgw/provider.go),
+> [`httpgw/forward.go`](https://github.com/henryhale/gateway/blob/master/httpgw/forward.go)
 
 The root package stays transport-independent. `httpgw` is an optional
 adapter layer for HTTP providers, in two flavours.
@@ -314,7 +314,7 @@ Notes on `httpgw.ForwardProvider`:
 
 ## Gateway construction
 
-> Source: [`gateway.go`](../gateway.go), [`options.go`](../options.go)
+> Source: [`gateway.go`](https://github.com/henryhale/gateway/blob/master/gateway.go), [`options.go`](https://github.com/henryhale/gateway/blob/master/options.go)
 
 `gw.New` takes functional options and returns a `*gw.Gateway`:
 
@@ -386,7 +386,7 @@ surface from `gw.New`, not from `gw.UseProvider`.
 
 ## Requests and results
 
-> Source: [`request.go`](../request.go)
+> Source: [`request.go`](https://github.com/henryhale/gateway/blob/master/request.go)
 
 `gw.NewRequest` builds an immutable routing envelope around an opaque value:
 
@@ -429,7 +429,7 @@ expected produces `ok == false` and a zero value, not a panic.
 
 ## Routing strategies
 
-> Source: [`routing.go`](../routing.go), `routing_*.go`
+> Source: [`routing.go`](https://github.com/henryhale/gateway/blob/master/routing.go), `routing_*.go`
 
 A strategy receives the eligible candidates and returns the index of the one
 to call. It runs only after operation, cooldown, in-flight, and filter
@@ -561,7 +561,7 @@ Requirements for a custom strategy:
 
 ## Filters
 
-> Source: [`provider.go`](../provider.go), [`gateway.go`](../gateway.go)
+> Source: [`provider.go`](https://github.com/henryhale/gateway/blob/master/provider.go), [`gateway.go`](https://github.com/henryhale/gateway/blob/master/gateway.go)
 
 `WithOperations` covers static capability. A `Filter` covers everything that
 changes at runtime:
@@ -602,7 +602,7 @@ Notes on filters:
 
 ## Retry and failover
 
-> Source: [`failure.go`](../failure.go), [`backoff.go`](../backoff.go)
+> Source: [`failure.go`](https://github.com/henryhale/gateway/blob/master/failure.go), [`backoff.go`](https://github.com/henryhale/gateway/blob/master/backoff.go)
 
 A `FailurePolicy` is consulted after each provider error and returns one of
 three actions:
@@ -673,7 +673,7 @@ to errors that are provably safe to replay.
 
 ## Cooldown and bulkheads
 
-> Source: [`provider.go`](../provider.go), [`gateway.go`](../gateway.go)
+> Source: [`provider.go`](https://github.com/henryhale/gateway/blob/master/provider.go), [`gateway.go`](https://github.com/henryhale/gateway/blob/master/gateway.go)
 
 Both limits are per-provider, opt-in, and process-local.
 
@@ -714,7 +714,7 @@ without spending an attempt from the budget.
 
 ## Error handling
 
-> Source: [`errors.go`](../errors.go)
+> Source: [`errors.go`](https://github.com/henryhale/gateway/blob/master/errors.go)
 
 Every failure from `HandleRequest` is a `*gw.Error`:
 
@@ -767,7 +767,7 @@ if err != nil {
 
 ## Observability
 
-> Source: [`observer.go`](../observer.go), [`gateway.go`](../gateway.go)
+> Source: [`observer.go`](https://github.com/henryhale/gateway/blob/master/observer.go), [`gateway.go`](https://github.com/henryhale/gateway/blob/master/gateway.go)
 
 Nothing is logged, measured, or traced unless an observer is installed.
 An observer is one method — `Observe(context.Context, Event)`:
@@ -828,7 +828,7 @@ cooldown.
 
 ## Provider hints
 
-> Source: [`request.go`](../request.go), [`gateway.go`](../gateway.go)
+> Source: [`request.go`](https://github.com/henryhale/gateway/blob/master/request.go), [`gateway.go`](https://github.com/henryhale/gateway/blob/master/gateway.go)
 
 A hint asks for one specific provider:
 
@@ -852,13 +852,13 @@ Notes on hints:
 
 ## Examples
 
-- `real` [Random quotes gateway](../_examples/quotes/README.md) —
+- `real` [Random quotes gateway](https://github.com/henryhale/gateway/blob/master/_examples/quotes/README.md) —
   translates three live third-party HTTP APIs into one response model.
-- `simulated` [HTTP reverse proxy](../_examples/http/main.go) — routes
+- `simulated` [HTTP reverse proxy](https://github.com/henryhale/gateway/blob/master/_examples/http/main.go) — routes
   streaming HTTP requests across local upstream services.
-- `simulated` [Catalog gateway](../_examples/catalog/main.go) —
+- `simulated` [Catalog gateway](https://github.com/henryhale/gateway/blob/master/_examples/catalog/main.go) —
   multi-operation providers, explicit failover, cooldown, and bulkheads.
-- `simulated` [Weighted SMS routing](../_examples/sms/main.go) —
+- `simulated` [Weighted SMS routing](https://github.com/henryhale/gateway/blob/master/_examples/sms/main.go) —
   distributes requests using provider weights.
 
 ## Further reading
